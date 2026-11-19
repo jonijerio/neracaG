@@ -1,3 +1,5 @@
+import { MonsterKind } from './types';
+
 class GameAudioEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
@@ -116,6 +118,46 @@ class GameAudioEngine {
       this.tone(ctx, 440, 554.37, 0.14, 'triangle', 0.08, now);
       this.tone(ctx, 659.25, 880, 0.2, 'sine', 0.08, now + 0.06);
     }
+  }
+
+  public playMonsterTelegraph(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.tone(ctx, 330, 440, 0.11, 'triangle', 0.045, now);
+    this.tone(ctx, 440, 587.33, 0.12, 'sine', 0.04, now + 0.09);
+  }
+
+  public playMonsterImpact(kind: MonsterKind): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    if (kind === 'alien') {
+      this.tone(ctx, 740, 390, 0.24, 'sine', 0.06, now);
+    } else if (kind === 'monkey') {
+      this.tone(ctx, 320, 480, 0.11, 'triangle', 0.065, now);
+    } else if (kind === 'human') {
+      this.tone(ctx, 130, 58, 0.2, 'triangle', 0.095, now);
+    } else if (kind === 'robot') {
+      this.tone(ctx, 490, 260, 0.13, 'sawtooth', 0.045, now);
+    } else {
+      this.tone(ctx, 210, 145, 0.16, 'sine', 0.065, now);
+    }
+  }
+
+  public playCoinEarned(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.tone(ctx, 987.77, 1318.51, 0.11, 'sine', 0.05, now + 0.05);
+  }
+
+  public playShopPurchase(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.tone(ctx, 523.25, 659.25, 0.1, 'triangle', 0.07, now);
+    this.tone(ctx, 783.99, 1046.5, 0.16, 'sine', 0.07, now + 0.07);
   }
 
   public playBallFall(): void {

@@ -14,12 +14,29 @@ import {
 } from './game/missions';
 import { ballBoardToWorld, createInitialPhysicsState, stepPhysics } from './game/physics';
 import { BalanceRenderer } from './game/renderer';
+import {
+  ShopConsumableId,
+  ShopSaveState,
+  ShopUpgradeId,
+  awardCoins,
+  buyConsumable,
+  buySkin,
+  buyUpgrade,
+  calculateTargetVictoryCoins,
+  consumeConsumable,
+  getTargetChargeMultiplier,
+  isSkinUnlocked,
+  readShopState,
+  saveShopState,
+  scaleBonusCoins,
+} from './game/shop';
 import { SKIN_PRESETS, SkinId } from './game/skins';
 import {
   DifficultyLevel,
   EndRunSnapshot,
   GamePhase,
   HudSnapshot,
+  MONSTER_PRESETS,
   MissionHudBanner,
   PHYSICS_CONSTANTS,
   POWERUP_PRESETS,
@@ -77,7 +94,13 @@ export default function App() {
 
   const [phase, setPhase] = useState<GamePhase>(initialPhase);
   const [difficulty, setDifficulty] = useState<DifficultyLevel>('normal');
-  const [selectedSkin, setSelectedSkin] = useState<SkinId>(() => readSavedSkin());
+  const [shopState, setShopState] = useState<ShopSaveState>(() => readShopState());
+  const [selectedSkin, setSelectedSkin] = useState<SkinId>(() => {
+    const saved = readSavedSkin();
+    const initialShop = readShopState();
+    return isSkinUnlocked(initialShop, saved) ? saved : 'classic';
+  });
+  const [openShopOnTitle, setOpenShopOnTitle] = useState<boolean>(false);
   const [missionState, setMissionState] = useState<DailyMissionSaveState>(() =>
     readDailyMissionState()
   );
@@ -97,17 +120,26 @@ export default function App() {
     windDir: 1,
     edgeDanger: 0,
     activePowerUp: null,
+    activeMonster: null,
     missionBanner: null,
+    runCoins: 0,
+    totalCoins: readShopState().coins,
+    edgeShields: 0,
+    tiltDir: 0,
   });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const phaseRef = useRef<GamePhase>(initialPhase);
   const difficultyRef = useRef<DifficultyLevel>('normal');
   const skinRef = useRef<SkinId>(selectedSkin);
+  const shopStateRef = useRef<ShopSaveState>(shopState);
   const missionStateRef = useRef<DailyMissionSaveState>(missionState);
   const bestScoreRef = useRef<number>(bestScore);
+  const runStartBestRef = useRef<number>(bestScore);
+  const newBestCelebratedRef = useRef<boolean>(false);
   const maxComboRef = useRef<number>(1);
   const powerUpsUsedRef = useRef<number>(0);
+  const runCoinsEarnedRef = useRef<number>(0);
   const runMissionsCompletedRef = useRef<number>(0);
   const runMissionBonusRef = useRef<number>(0);
   const runUnlockedRewardsRef = useRef<string[]>([]);
@@ -149,10 +181,45 @@ export default function App() {
   }, []);
 
   const handleSelectSkin = useCallback((nextSkin: SkinId) => {
+    if (!isSkinUnlocked(shopStateRef.current, nextSkin)) return;
     skinRef.current = nextSkin;
     setSelectedSkin(nextSkin);
     saveSelectedSkin(nextSkin);
     rendererRef.current.setSkin(nextSkin);
+  }, []);
+
+  const handleBuySkin = useCallback((skinId: SkinId) => {
+    const res = buySkin(shopStateRef.current, skinId);
+    if (!res.success) return;
+    gameAudio.unlock();
+    gameAudio.playShopPurchase();
+    shopStateRef.current = res.nextState;
+    setShopState(res.nextState);
+    saveShopState(res.nextState);
+    skinRef.current = skinId;
+    setSelectedSkin(skinId);
+    saveSelectedSkin(skinId);
+    rendererRef.current.setSkin(skinId);
+  }, []);
+
+  const handleBuyConsumable = useCallback((itemId: ShopConsumableId) => {
+    const res = buyConsumable(shopStateRef.current, itemId);
+    if (!res.success) return;
+    gameAudio.unlock();
+    gameAudio.playShopPurchase();
+    shopStateRef.current = res.nextState;
+    setShopState(res.nextState);
+    saveShopState(res.nextState);
+  }, []);
+
+  const handleBuyUpgrade = useCallback((upgradeId: ShopUpgradeId) => {
+    const res = buyUpgrade(shopStateRef.current, upgradeId);
+    if (!res.success) return;
+    gameAudio.unlock();
+    gameAudio.playShopPurchase();
+    shopStateRef.current = res.nextState;
+    setShopState(res.nextState);
+    saveShopState(res.nextState);
   }, []);
 
   const handleToggleReward = useCallback((rewardId: SpecialRewardId) => {
@@ -167,14 +234,34 @@ export default function App() {
     gameAudio.unlock();
     gameAudio.playStart();
     clearAllInputs();
+    setOpenShopOnTitle(false);
 
     const activeDifficulty = difficultyRef.current;
+    let activeShop = shopStateRef.current;
     const fresh = createInitialPhysicsState(Date.now() & 0xffffffff, activeDifficulty);
+    fresh.targetChargeMultiplier = getTargetChargeMultiplier(activeShop);
+    fresh.edgeShieldsRemaining = activeShop.consumables.edge_shield > 0 ? 1 : 0;
+
+    if (activeShop.consumables.start_stabilizer > 0) {
+      activeShop = consumeConsumable(activeShop, 'start_stabilizer');
+      shopStateRef.current = activeShop;
+      setShopState(activeShop);
+      saveShopState(activeShop);
+      fresh.activePowerUp = {
+        type: 'stabilizer',
+        remaining: POWERUP_PRESETS.stabilizer.duration,
+        duration: POWERUP_PRESETS.stabilizer.duration,
+      };
+    }
+
     physicsRef.current = fresh;
     rendererRef.current.resetEffects();
     rendererRef.current.setActiveRewards(missionStateRef.current.activeRewards);
+    runStartBestRef.current = bestScoreRef.current;
+    newBestCelebratedRef.current = false;
     maxComboRef.current = 1;
     powerUpsUsedRef.current = 0;
+    runCoinsEarnedRef.current = 0;
     runMissionsCompletedRef.current = 0;
     runMissionBonusRef.current = 0;
     runUnlockedRewardsRef.current = [];
@@ -194,8 +281,12 @@ export default function App() {
       windPhase: 'calm',
       windDir: 1,
       edgeDanger: 0,
-      activePowerUp: null,
+      activePowerUp: fresh.activePowerUp ? { ...fresh.activePowerUp } : null,
+      activeMonster: null,
       missionBanner: null,
+      runCoins: 0,
+      totalCoins: activeShop.coins,
+      edgeShields: fresh.edgeShieldsRemaining,
     });
 
     syncBodyState('playing');
@@ -218,11 +309,12 @@ export default function App() {
     canvasRef.current?.focus();
   }, [clearAllInputs, syncBodyState]);
 
-  const returnToTitle = useCallback(() => {
+  const returnToTitle = useCallback((openShop = false) => {
     clearAllInputs();
     physicsRef.current = createInitialPhysicsState(20261119, difficultyRef.current);
     rendererRef.current.resetEffects();
     setEndRun(null);
+    setOpenShopOnTitle(openShop);
     syncBodyState('title');
     setPhase('title');
   }, [clearAllInputs, syncBodyState]);
@@ -254,7 +346,8 @@ export default function App() {
         if ((code === 'Enter' || code === 'Space') && !e.repeat) {
           if (
             document.querySelector('[data-testid="skin-picker-drawer"]') ||
-            document.querySelector('[data-testid="daily-missions-drawer"]')
+            document.querySelector('[data-testid="daily-missions-drawer"]') ||
+            document.querySelector('[data-testid="shop-drawer"]')
           ) {
             return;
           }
@@ -357,7 +450,9 @@ export default function App() {
     let lastHudTime = -1;
     let lastHudCombo = -1;
     let lastHudWind = '';
+    let lastHudMonster = '';
     let lastHudDanger = false;
+    let lastHudTilt: -1 | 0 | 1 = 0;
     let lastRenderedPhase: GamePhase | null = null;
     let lastRenderedW = 0;
     let lastRenderedH = 0;
@@ -427,15 +522,28 @@ export default function App() {
           } else if (ev.type === 'target_complete') {
             const combo = ev.combo ?? 1;
             const pts = ev.points ?? 100;
+            const earnedCoins = calculateTargetVictoryCoins({
+              level: sim.level,
+              combo,
+              difficulty: sim.difficulty,
+              coinMultiplierLevel: shopStateRef.current.upgrades.coin_multiplier,
+            });
+            runCoinsEarnedRef.current += earnedCoins;
+            const nextShop = awardCoins(shopStateRef.current, earnedCoins);
+            shopStateRef.current = nextShop;
+            setShopState(nextShop);
+            saveShopState(nextShop);
+
             maxComboRef.current = Math.max(maxComboRef.current, combo + 1);
             gameAudio.playTargetComplete(combo);
+            gameAudio.playCoinEarned();
             const worldPos = ballBoardToWorld(sim.boardAngle, sim.ballX);
             renderer.spawnBurst(worldPos.x, worldPos.y, hasSupernova ? 28 : 18, skinFx.burstColor);
             renderer.spawnShockwave(worldPos.x, worldPos.y, skinFx.shockwaveColor, hasSupernova ? 96 : 76);
             if (hasSupernova) {
               renderer.spawnShockwave(worldPos.x, worldPos.y, '#fef08a', 54);
             }
-            renderer.spawnCallout(worldPos.x, worldPos.y, `+${pts}`, '#34d399');
+            renderer.spawnCallout(worldPos.x, worldPos.y, `+${pts} · +${earnedCoins} Koin`, '#34d399');
           } else if (ev.type === 'powerup_collected') {
             powerUpsUsedRef.current += 1;
             const pType = ev.powerUpType ?? 'slow_motion';
@@ -464,6 +572,43 @@ export default function App() {
             const intensity = ev.intensity ?? 0.45;
             gameAudio.playImpact(intensity * 0.85);
             renderer.triggerImpactShake(intensity * 0.72, 0, (ev.dir ?? 1) * 0.55);
+          } else if (ev.type === 'monster_telegraph') {
+            gameAudio.playMonsterTelegraph();
+          } else if (ev.type === 'monster_spawn') {
+            const mKind = ev.monsterKind ?? 'monkey';
+            const mColor = MONSTER_PRESETS[mKind].color;
+            gameAudio.playMonsterImpact(mKind);
+            renderer.triggerImpactShake((ev.intensity ?? 0.44) * 0.62, 0, 0.45);
+            const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? 0);
+            renderer.spawnBurst(worldPos.x, worldPos.y, 12, mColor);
+            renderer.spawnShockwave(worldPos.x, worldPos.y, mColor, 58);
+          } else if (ev.type === 'monster_hit') {
+            gameAudio.playMonsterImpact(ev.monsterKind ?? 'robot');
+            renderer.triggerImpactShake(ev.intensity ?? 0.62, ev.dir ?? 0, 0.25);
+            const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? sim.ballX);
+            renderer.spawnBurst(worldPos.x, worldPos.y, 14, '#facc15');
+            renderer.spawnShockwave(worldPos.x, worldPos.y, '#a78bfa', 64);
+          } else if (ev.type === 'monster_leave') {
+            const bonusCoins = scaleBonusCoins(5, shopStateRef.current.upgrades.coin_multiplier);
+            runCoinsEarnedRef.current += bonusCoins;
+            const nextShop = awardCoins(shopStateRef.current, bonusCoins);
+            shopStateRef.current = nextShop;
+            setShopState(nextShop);
+            saveShopState(nextShop);
+            const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? 0);
+            renderer.spawnBurst(worldPos.x, worldPos.y, 8, '#cbd5e1');
+            renderer.spawnCallout(worldPos.x, worldPos.y, `+${ev.points ?? 25} · +${bonusCoins} Koin`, '#f5c469');
+          } else if (ev.type === 'shield_save') {
+            const nextShop = consumeConsumable(shopStateRef.current, 'edge_shield');
+            shopStateRef.current = nextShop;
+            setShopState(nextShop);
+            saveShopState(nextShop);
+            gameAudio.playPowerUpCollect('stabilizer');
+            renderer.triggerImpactShake(0.7, -(ev.dir ?? 1), 0.3);
+            const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? sim.ballX);
+            renderer.spawnBurst(worldPos.x, worldPos.y, 20, '#38bdf8');
+            renderer.spawnShockwave(worldPos.x, worldPos.y, '#38bdf8', 84);
+            renderer.spawnCallout(worldPos.x, worldPos.y, 'PERISAI TEPI!', '#38bdf8');
           } else if (ev.type === 'ball_fall_start') {
             gameAudio.playBallFall();
             renderer.triggerImpactShake(ev.intensity ?? 0.85, ev.dir ?? Math.sign(sim.ballX), 0.75);
@@ -481,6 +626,10 @@ export default function App() {
               bestScoreRef.current = nextBest;
               setBestScore(nextBest);
               saveBestScore(nextBest);
+              if (!newBestCelebratedRef.current) {
+                newBestCelebratedRef.current = true;
+                renderer.spawnConfettiExplosion(2000, cssWidth, cssHeight);
+              }
             }
 
             setEndRun({
@@ -495,10 +644,31 @@ export default function App() {
               missionsCompletedCount: runMissionsCompletedRef.current,
               missionBonusPoints: runMissionBonusRef.current,
               unlockedRewardNames: [...runUnlockedRewardsRef.current],
+              coinsEarned: runCoinsEarnedRef.current,
+              totalCoins: shopStateRef.current.coins,
             });
             clearAllInputs();
             syncBodyState('gameover');
             setPhase('gameover');
+          }
+        }
+
+        // Trigger full-screen confetti explosion on breaking high score live
+        if (!sim.isFalling && !sim.isGameOver && !newBestCelebratedRef.current) {
+          const liveIntScore = Math.round(sim.score);
+          const brokeExistingRecord =
+            runStartBestRef.current > 0 && liveIntScore > runStartBestRef.current;
+          const achievedFirstRecord =
+            runStartBestRef.current === 0 && sim.targetsCleared >= 1 && liveIntScore > 0;
+
+          if (brokeExistingRecord || achievedFirstRecord) {
+            newBestCelebratedRef.current = true;
+            renderer.spawnConfettiExplosion(2000, cssWidth, cssHeight);
+            const worldPos = ballBoardToWorld(sim.boardAngle, sim.ballX);
+            renderer.spawnCallout(worldPos.x, worldPos.y - 22, 'REKOR BARU!', '#fde047');
+            if (brokeExistingRecord) {
+              gameAudio.playTargetComplete(10);
+            }
           }
         }
 
@@ -539,6 +709,16 @@ export default function App() {
             runMissionsCompletedRef.current += evalRes.newlyCompleted.length;
             runMissionBonusRef.current += batchBonus;
 
+            const missionCoins = scaleBonusCoins(
+              50 * evalRes.newlyCompleted.length,
+              shopStateRef.current.upgrades.coin_multiplier
+            );
+            runCoinsEarnedRef.current += missionCoins;
+            const nextShop = awardCoins(shopStateRef.current, missionCoins);
+            shopStateRef.current = nextShop;
+            setShopState(nextShop);
+            saveShopState(nextShop);
+
             const lastCompleted = evalRes.newlyCompleted[evalRes.newlyCompleted.length - 1];
             missionBannerRef.current = {
               title: lastCompleted.title,
@@ -548,10 +728,16 @@ export default function App() {
             missionBannerTimerRef.current = 3.4;
 
             gameAudio.playTargetComplete(8);
+            gameAudio.playCoinEarned();
             const worldPos = ballBoardToWorld(sim.boardAngle, sim.ballX);
             renderer.spawnBurst(worldPos.x, worldPos.y, 24, '#facc15');
             renderer.spawnShockwave(worldPos.x, worldPos.y, '#facc15', 92);
-            renderer.spawnCallout(worldPos.x, worldPos.y - 14, `Misi +${batchBonus}`, '#facc15');
+            renderer.spawnCallout(
+              worldPos.x,
+              worldPos.y - 14,
+              `Misi +${batchBonus} · +${missionCoins} Koin`,
+              '#facc15'
+            );
           }
         }
 
@@ -568,6 +754,9 @@ export default function App() {
         const intTime = Math.floor(sim.elapsedTime);
         const dangerFlag = sim.edgeDanger > 0.65;
         const windKey = `${sim.windPhase}-${sim.windDir}`;
+        const leadMonster = sim.monsters[0] ?? null;
+        const monsterKey = leadMonster ? `${leadMonster.id}-${leadMonster.phase}` : '';
+        const activeTiltDir = (tiltInput > 0.08 ? 1 : tiltInput < -0.08 ? -1 : 0) as -1 | 0 | 1;
 
         if (
           hudAccumulator >= 0.08 ||
@@ -575,14 +764,18 @@ export default function App() {
           intTime !== lastHudTime ||
           sim.combo !== lastHudCombo ||
           windKey !== lastHudWind ||
-          dangerFlag !== lastHudDanger
+          monsterKey !== lastHudMonster ||
+          dangerFlag !== lastHudDanger ||
+          activeTiltDir !== lastHudTilt
         ) {
           hudAccumulator = 0;
           lastHudScore = intScore;
           lastHudTime = intTime;
           lastHudCombo = sim.combo;
           lastHudWind = windKey;
+          lastHudMonster = monsterKey;
           lastHudDanger = dangerFlag;
+          lastHudTilt = activeTiltDir;
 
           setHud({
             difficulty: sim.difficulty,
@@ -597,7 +790,14 @@ export default function App() {
             windDir: sim.windDir,
             edgeDanger: sim.edgeDanger,
             activePowerUp: sim.activePowerUp ? { ...sim.activePowerUp } : null,
+            activeMonster: leadMonster
+              ? { kind: leadMonster.kind, phase: leadMonster.phase, x: leadMonster.x }
+              : null,
             missionBanner: missionBannerRef.current ? { ...missionBannerRef.current } : null,
+            runCoins: runCoinsEarnedRef.current,
+            totalCoins: shopStateRef.current.coins,
+            edgeShields: sim.edgeShieldsRemaining,
+            tiltDir: activeTiltDir,
           });
         }
       }
@@ -689,8 +889,14 @@ export default function App() {
           difficulty={difficulty}
           selectedSkin={selectedSkin}
           missionState={missionState}
+          shopState={shopState}
+          initialShopOpen={openShopOnTitle}
+          onConsumeInitialShopOpen={() => setOpenShopOnTitle(false)}
           onSelectDifficulty={handleSelectDifficulty}
           onSelectSkin={handleSelectSkin}
+          onBuySkin={handleBuySkin}
+          onBuyConsumable={handleBuyConsumable}
+          onBuyUpgrade={handleBuyUpgrade}
           onToggleReward={handleToggleReward}
           onStart={startNewRun}
         />
@@ -715,7 +921,8 @@ export default function App() {
         endRun={endRun}
         onResume={resumeGame}
         onRestart={startNewRun}
-        onReturnTitle={returnToTitle}
+        onOpenShop={() => returnToTitle(true)}
+        onReturnTitle={() => returnToTitle(false)}
       />
     </main>
   );

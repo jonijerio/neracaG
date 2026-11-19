@@ -1,5 +1,7 @@
-import React from 'react';
-import { DIFFICULTY_PRESETS, HudSnapshot, POWERUP_PRESETS } from '../game/types';
+import React, { useEffect, useRef, useState } from 'react';
+import { computeAtmosphere } from '../game/atmosphere';
+import { DIFFICULTY_PRESETS, HudSnapshot, MONSTER_PRESETS, POWERUP_PRESETS } from '../game/types';
+import { SparkBurst } from './UiFxOverlay';
 
 interface GameHudProps {
   hud: HudSnapshot;
@@ -24,7 +26,32 @@ export const GameHud: React.FC<GameHudProps> = ({
   onRestart,
   onTiltPointer,
 }) => {
+  const prevCoinsRef = useRef<number>(hud.runCoins);
+  const prevLevelRef = useRef<number>(hud.level);
+  const [coinFx, setCoinFx] = useState<{ key: number; delta: number }>({ key: 0, delta: 0 });
+  const [levelBanner, setLevelBanner] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (hud.runCoins > prevCoinsRef.current) {
+      const delta = hud.runCoins - prevCoinsRef.current;
+      setCoinFx((prev) => ({ key: prev.key + 1, delta }));
+    }
+    prevCoinsRef.current = hud.runCoins;
+  }, [hud.runCoins]);
+
+  useEffect(() => {
+    if (hud.level > prevLevelRef.current) {
+      setLevelBanner(hud.level);
+      const timer = window.setTimeout(() => setLevelBanner(null), 1600);
+      prevLevelRef.current = hud.level;
+      return () => window.clearTimeout(timer);
+    }
+    prevLevelRef.current = hud.level;
+    return undefined;
+  }, [hud.level]);
+
   const difficultyLabel = DIFFICULTY_PRESETS[hud.difficulty]?.label ?? 'Normal';
+  const atmosphere = computeAtmosphere(hud.level);
   const activePowerUpInfo = hud.activePowerUp
     ? {
         label: POWERUP_PRESETS[hud.activePowerUp.type].label,
@@ -45,10 +72,51 @@ export const GameHud: React.FC<GameHudProps> = ({
           : '← Angin Kencang'
         : null;
 
+  const monsterAlert = hud.activeMonster
+    ? {
+        preset: MONSTER_PRESETS[hud.activeMonster.kind],
+        phase: hud.activeMonster.phase,
+        side: hud.activeMonster.x < -12 ? 'Kiri' : hud.activeMonster.x > 12 ? 'Kanan' : 'Tengah',
+      }
+    : null;
+
+  const dangerStrength = Math.max(0, Math.min(1, (hud.edgeDanger - 0.42) / 0.58));
+  const leftActive = hud.tiltDir === -1;
+  const rightActive = hud.tiltDir === 1;
+
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
+      {/* Peripheral Edge Danger Vignette */}
+      {dangerStrength > 0.02 && (
+        <div
+          aria-hidden="true"
+          data-testid="hud-danger-vignette"
+          className={`pointer-events-none fixed inset-0 z-0 transition-opacity duration-150 ${
+            hud.edgeDanger > 0.72 ? 'neraca-danger-pulse' : ''
+          }`}
+          style={{
+            opacity: dangerStrength * 0.85,
+            boxShadow: 'inset 0 0 84px rgba(244, 63, 94, 0.55)',
+          }}
+        />
+      )}
+
+      {/* Subtle Active Power-Up Perimeter Glow */}
+      {activePowerUpInfo && (
+        <div
+          aria-hidden="true"
+          data-testid="hud-powerup-aura"
+          className="pointer-events-none fixed inset-x-0 top-0 z-0 h-20 transition-opacity duration-200"
+          style={{
+            background: activePowerUpInfo.isSlow
+              ? 'linear-gradient(180deg, rgba(56, 189, 248, 0.16) 0%, rgba(56, 189, 248, 0) 100%)'
+              : 'linear-gradient(180deg, rgba(52, 211, 153, 0.16) 0%, rgba(52, 211, 153, 0) 100%)',
+          }}
+        />
+      )}
+
       {/* Top Perimeter Bar */}
-      <div className="flex items-start justify-between gap-2 sm:gap-4">
+      <div className="relative z-10 flex items-start justify-between gap-2 sm:gap-4">
         {/* Top-Left: Score & Run Metrics */}
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 sm:gap-x-6">
           <div>
@@ -56,8 +124,9 @@ export const GameHud: React.FC<GameHudProps> = ({
               Skor
             </div>
             <div
+              key={`score-${hud.targetsCleared}`}
               data-testid="hud-score"
-              className="font-mono-num text-2xl font-bold leading-none text-[#f4f1ea] sm:text-4xl"
+              className="neraca-pop font-mono-num text-2xl font-bold leading-none text-[#f4f1ea] sm:text-4xl"
               style={{ textShadow: '0 2px 6px rgba(0,0,0,0.6)' }}
             >
               {Math.round(hud.score)}
@@ -85,10 +154,13 @@ export const GameHud: React.FC<GameHudProps> = ({
 
             {hud.combo > 1 && (
               <div>
-                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] sm:text-[11px]">
+                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] sm:mr-1.5 sm:text-[11px]">
                   Kombo
                 </span>
-                <span className="font-mono-num font-bold text-[#34d399]">
+                <span
+                  key={`combo-${hud.combo}`}
+                  className="neraca-pop font-mono-num inline-block font-bold text-[#34d399]"
+                >
                   x{hud.combo}
                 </span>
               </div>
@@ -102,13 +174,45 @@ export const GameHud: React.FC<GameHudProps> = ({
                 {Math.round(hud.bestScore)}
               </span>
             </div>
+
+            <div className="relative flex items-baseline">
+              <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] sm:mr-1.5 sm:text-[11px]">
+                Koin
+              </span>
+              <span
+                key={`coins-${hud.runCoins}`}
+                data-testid="hud-coins"
+                className="neraca-pop font-mono-num inline-block font-bold text-[#fde047]"
+              >
+                +{hud.runCoins}
+              </span>
+              {coinFx.key > 0 && (
+                <SparkBurst
+                  burstKey={coinFx.key}
+                  label={`+${coinFx.delta}`}
+                  color="#fde047"
+                  className="ml-2"
+                />
+              )}
+            </div>
+
+            {hud.edgeShields > 0 && (
+              <div className="hidden sm:block">
+                <span
+                  data-testid="hud-shield"
+                  className="neraca-alert-in inline-block text-[11px] font-bold uppercase tracking-wider text-[#38bdf8]"
+                >
+                  Perisai Siap
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Top-Center: Mission Completion / Active Power-Up / Live Hazard Alert */}
+        {/* Top-Center: Mission Completion / Level-Up / Active Power-Up / Live Hazard Alert */}
         <div className="hidden min-h-6 flex-col items-center justify-center gap-1 sm:flex">
           {hud.missionBanner ? (
-            <div data-testid="hud-mission-banner" className="flex flex-col items-center text-center">
+            <div data-testid="hud-mission-banner" className="neraca-alert-in flex flex-col items-center text-center">
               <span className="text-xs font-bold uppercase tracking-wider text-[#facc15]">
                 Misi Selesai: {hud.missionBanner.title} · +{hud.missionBanner.bonusPoints} Poin
               </span>
@@ -118,16 +222,46 @@ export const GameHud: React.FC<GameHudProps> = ({
                 </span>
               )}
             </div>
+          ) : levelBanner !== null ? (
+            <div key={levelBanner} data-testid="hud-level-up" className="neraca-alert-in flex flex-col items-center text-center">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#fde047]">
+                Naik ke Level {levelBanner}!
+              </span>
+              <span className="text-[11px] font-medium text-[#cbd5e1]">
+                {atmosphere.label}
+              </span>
+            </div>
           ) : hud.edgeDanger > 0.65 ? (
-            <span className="text-xs font-bold uppercase tracking-wider text-[#fb7185]">
+            <span className="neraca-alert-in neraca-danger-pulse text-xs font-bold uppercase tracking-wider text-[#fb7185]">
               Awas Tepi Papan!
             </span>
+          ) : monsterAlert ? (
+            <div
+              key={`${monsterAlert.preset.kind}-${monsterAlert.phase}`}
+              data-testid="hud-monster-alert"
+              className="neraca-alert-in flex flex-col items-center text-center"
+            >
+              <span
+                className="text-xs font-bold uppercase tracking-wider"
+                style={{ color: monsterAlert.preset.color }}
+              >
+                {monsterAlert.phase === 'telegraph'
+                  ? `Awas ${monsterAlert.preset.name} (${monsterAlert.side})!`
+                  : monsterAlert.preset.name}
+              </span>
+              <span className="text-[11px] font-medium text-[#cbd5e1]">
+                {monsterAlert.preset.warningText}
+              </span>
+            </div>
           ) : windLabel ? (
-            <span className="text-xs font-bold uppercase tracking-wider text-[#7dd3fc]">
+            <span
+              key={`${hud.windPhase}-${hud.windDir}`}
+              className="neraca-alert-in text-xs font-bold uppercase tracking-wider text-[#7dd3fc]"
+            >
               {windLabel}
             </span>
           ) : activePowerUpInfo ? (
-            <div data-testid="hud-powerup" className="flex flex-col items-center gap-1">
+            <div data-testid="hud-powerup" className="neraca-alert-in flex flex-col items-center gap-1">
               <div className="flex items-center gap-2 text-xs font-bold tracking-wide">
                 <span className={activePowerUpInfo.isSlow ? 'text-[#38bdf8]' : 'text-[#34d399]'}>
                   {activePowerUpInfo.label}
@@ -136,16 +270,18 @@ export const GameHud: React.FC<GameHudProps> = ({
                   {activePowerUpInfo.remaining.toFixed(1)}d
                 </span>
               </div>
-              <div className="h-1 w-28 overflow-hidden rounded-full bg-[#252f3a]">
+              <div className="relative h-1.5 w-28 overflow-hidden rounded-full bg-[#252f3a]">
                 <div
-                  className={activePowerUpInfo.isSlow ? 'h-full bg-[#38bdf8]' : 'h-full bg-[#34d399]'}
+                  className={activePowerUpInfo.isSlow ? 'relative h-full overflow-hidden bg-[#38bdf8]' : 'relative h-full overflow-hidden bg-[#34d399]'}
                   style={{ width: `${activePowerUpInfo.pct}%` }}
-                />
+                >
+                  <span className="neraca-shimmer absolute inset-y-0 left-0 w-10 bg-white/45" />
+                </div>
               </div>
             </div>
           ) : (
-            <span className="text-xs font-medium text-[#64748b]">
-              {difficultyLabel} · Level {hud.level} · Target {hud.targetsCleared}
+            <span data-testid="hud-atmosphere" className="text-xs font-medium text-[#94a3b8]">
+              {difficultyLabel} · Level {hud.level} · {atmosphere.label}
             </span>
           )}
         </div>
@@ -161,7 +297,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.currentTarget.blur();
               onToggleMute();
             }}
-            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] transition-colors hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
+            className="neraca-btn-tactile flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
           >
             {muted ? (
               <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -187,7 +323,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.currentTarget.blur();
               onRestart();
             }}
-            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] transition-colors hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
+            className="neraca-btn-tactile flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
@@ -204,7 +340,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.currentTarget.blur();
               onPause();
             }}
-            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] transition-colors hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
+            className="neraca-btn-tactile flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
               <line x1="9" y1="6" x2="9" y2="18" />
@@ -214,8 +350,8 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       </div>
 
-      {/* Bottom Perimeter: Subtle Touch/Pointer Tilt Paddles & Hint */}
-      <div className="flex items-end justify-between gap-4">
+      {/* Bottom Perimeter: Reactive Touch/Keyboard Tilt Paddles & Hint */}
+      <div className="relative z-10 flex items-end justify-between gap-4">
         <button
           type="button"
           tabIndex={-1}
@@ -227,7 +363,11 @@ export const GameHud: React.FC<GameHudProps> = ({
           onPointerUp={() => onTiltPointer(0)}
           onPointerLeave={() => onTiltPointer(0)}
           onPointerCancel={() => onTiltPointer(0)}
-          className="pointer-events-auto flex h-12 min-w-24 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#334155] bg-[#1b222a]/90 px-4 text-sm font-semibold text-[#e2e8f0] transition-transform duration-100 hover:border-[#d89b3c] active:scale-95 active:border-[#e89b2d] active:text-[#f5c469]"
+          className={`pointer-events-auto flex h-12 min-w-24 cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-all duration-100 active:scale-95 ${
+            leftActive
+              ? 'scale-95 border-[#e89b2d] bg-[#2a2216]/95 text-[#f5c469] shadow-[0_0_16px_rgba(232,155,45,0.28)]'
+              : 'border-[#334155] bg-[#1b222a]/90 text-[#e2e8f0] hover:border-[#d89b3c]'
+          }`}
         >
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
@@ -235,7 +375,10 @@ export const GameHud: React.FC<GameHudProps> = ({
           <span>Kiri</span>
         </button>
 
-        <div className="hidden pb-1 text-center text-xs text-[#64748b] md:block">
+        <div
+          className="hidden pb-1 text-center text-xs font-medium text-[#e2e8f0]/80 md:block"
+          style={{ textShadow: '0 1px 4px rgba(0, 0, 0, 0.7)' }}
+        >
           Tahan bola di zona target bercahaya untuk bonus kombo
         </div>
 
@@ -250,7 +393,11 @@ export const GameHud: React.FC<GameHudProps> = ({
           onPointerUp={() => onTiltPointer(0)}
           onPointerLeave={() => onTiltPointer(0)}
           onPointerCancel={() => onTiltPointer(0)}
-          className="pointer-events-auto flex h-12 min-w-24 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#334155] bg-[#1b222a]/90 px-4 text-sm font-semibold text-[#e2e8f0] transition-transform duration-100 hover:border-[#d89b3c] active:scale-95 active:border-[#e89b2d] active:text-[#f5c469]"
+          className={`pointer-events-auto flex h-12 min-w-24 cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-all duration-100 active:scale-95 ${
+            rightActive
+              ? 'scale-95 border-[#e89b2d] bg-[#2a2216]/95 text-[#f5c469] shadow-[0_0_16px_rgba(232,155,45,0.28)]'
+              : 'border-[#334155] bg-[#1b222a]/90 text-[#e2e8f0] hover:border-[#d89b3c]'
+          }`}
         >
           <span>Kanan</span>
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -261,3 +408,4 @@ export const GameHud: React.FC<GameHudProps> = ({
     </div>
   );
 };
+

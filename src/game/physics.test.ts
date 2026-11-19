@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MONSTER_KINDS,
   ballBoardToWorld,
   createInitialPhysicsState,
   getFallThreshold,
   getTargetArmTime,
   getTargetHoldTime,
   getTargetPointValue,
+  spawnMonster,
   stepPhysics,
 } from './physics';
 import {
@@ -16,9 +18,22 @@ import {
   selectDailyMissionIds,
   toggleSpecialReward,
 } from './missions';
+import { computeAtmosphere, levelToAtmosphereProgress } from './atmosphere';
 import { BalanceRenderer } from './renderer';
+import {
+  STARTER_COINS,
+  awardCoins,
+  buyConsumable,
+  buySkin,
+  buyUpgrade,
+  calculateTargetVictoryCoins,
+  consumeConsumable,
+  createInitialShopState,
+  getTargetChargeMultiplier,
+  isSkinUnlocked,
+} from './shop';
 import { SKIN_ORDER, SKIN_PRESETS, getSkinConfig } from './skins';
-import { PHYSICS_CONSTANTS } from './types';
+import { MONSTER_PRESETS, PHYSICS_CONSTANTS } from './types';
 
 test('ball survives first 5 seconds cleanly without any player input', () => {
   const state = createInitialPhysicsState(12345);
@@ -363,3 +378,251 @@ test('daily mission system picks 3 challenges deterministically, awards bonus po
   assert.equal(rolledOver.totalCompletedAllTime, 3);
   assert.equal(rolledOver.unlockedRewards.includes('aura_juara'), true);
 });
+
+test('5 balance-disturbing monsters spawn after grace period and disturb board & ball physics distinctly', () => {
+  assert.equal(MONSTER_KINDS.length, 5);
+  for (const k of MONSTER_KINDS) {
+    assert.equal(MONSTER_PRESETS[k].name.length > 0, true);
+  }
+
+  // 1. Title showcase (targetAngleOverride provided) suppresses monster spawning
+  const showcase = createInitialPhysicsState(12345);
+  showcase.monsterSpawnTimer = 0.05;
+  for (let i = 0; i < 30; i++) {
+    stepPhysics(showcase, 1 / 60, 0, 0.02);
+  }
+  assert.equal(showcase.monsters.length, 0);
+
+  // 2. Natural gameplay spawns a monster after MONSTER_GRACE_TIME and transitions telegraph -> active
+  const autoSpawn = createInitialPhysicsState(12345);
+  let sawTelegraph = false;
+  let sawSpawn = false;
+  for (let i = 0; i < 60 * 8; i++) {
+    const events = stepPhysics(autoSpawn, 1 / 60, 0);
+    if (events.some((e) => e.type === 'monster_telegraph')) sawTelegraph = true;
+    if (events.some((e) => e.type === 'monster_spawn')) {
+      sawSpawn = true;
+      break;
+    }
+  }
+  assert.equal(sawTelegraph, true);
+  assert.equal(sawSpawn, true);
+
+  // 3. Heavy Human & Monkey weight torque tilts the board down toward the monster's side
+  const heavyState = createInitialPhysicsState(12345);
+  heavyState.windTimer = 99;
+  const human = spawnMonster(heavyState, 'human', 175);
+  human.phase = 'active';
+  human.timer = human.maxTimer;
+  for (let i = 0; i < 40; i++) {
+    stepPhysics(heavyState, 1 / 60, 0);
+  }
+  assert.equal(heavyState.boardAngle > 0.06, true);
+
+  const monkeyState = createInitialPhysicsState(12345);
+  monkeyState.windTimer = 99;
+  const monkey = spawnMonster(monkeyState, 'monkey', -150);
+  monkey.phase = 'active';
+  monkey.timer = monkey.maxTimer;
+  for (let i = 0; i < 35; i++) {
+    stepPhysics(monkeyState, 1 / 60, 0);
+  }
+  assert.equal(monkeyState.boardAngle < -0.02, true);
+
+  // 4. Alien UFO tractor beam pulls stationary ball toward the beam x
+  const alienState = createInitialPhysicsState(12345);
+  alienState.windTimer = 99;
+  const alien = spawnMonster(alienState, 'alien', 65);
+  alien.phase = 'active';
+  alien.timer = alien.maxTimer;
+  alien.vx = 0;
+  for (let i = 0; i < 30; i++) {
+    stepPhysics(alienState, 1 / 60, 0);
+  }
+  assert.equal(alienState.ballVel > 15, true);
+
+  // 5. Robot collides with ball and triggers monster_hit impulse
+  const robotState = createInitialPhysicsState(12345);
+  robotState.windTimer = 99;
+  const robot = spawnMonster(robotState, 'robot', -30);
+  robot.phase = 'active';
+  robot.timer = robot.maxTimer;
+  robot.vx = 180;
+  let sawRobotHit = false;
+  for (let i = 0; i < 40; i++) {
+    const events = stepPhysics(robotState, 1 / 60, 0);
+    if (events.some((e) => e.type === 'monster_hit' && e.monsterKind === 'robot')) {
+      sawRobotHit = true;
+      break;
+    }
+  }
+  assert.equal(sawRobotHit, true);
+
+  // 6. Slime increases friction inside its puddle compared to clean board
+  const cleanBall = createInitialPhysicsState(12345);
+  cleanBall.windTimer = 99;
+  cleanBall.ballVel = 150;
+  const slimedBall = createInitialPhysicsState(12345);
+  slimedBall.windTimer = 99;
+  slimedBall.ballVel = 150;
+  const slime = spawnMonster(slimedBall, 'slime', 15);
+  slime.phase = 'active';
+  slime.timer = slime.maxTimer;
+  for (let i = 0; i < 15; i++) {
+    stepPhysics(cleanBall, 1 / 60, 0);
+    stepPhysics(slimedBall, 1 / 60, 0);
+  }
+  assert.equal(slimedBall.ballVel < cleanBall.ballVel, true);
+
+  // 7. Monster expiry emits monster_leave and awards survival bonus
+  const leaveState = createInitialPhysicsState(12345);
+  const mLeave = spawnMonster(leaveState, 'slime', 90);
+  mLeave.phase = 'active';
+  mLeave.timer = 0.05;
+  let leftEvent = false;
+  for (let i = 0; i < 10; i++) {
+    const events = stepPhysics(leaveState, 1 / 60, 0);
+    if (events.some((e) => e.type === 'monster_leave' && e.points === 25)) {
+      leftEvent = true;
+    }
+  }
+  assert.equal(leftEvent, true);
+  assert.equal(leaveState.monsters.length, 0);
+});
+
+test('dynamic background atmosphere transitions smoothly from calm sunrise at level 1 to stormy night at high levels', () => {
+  assert.equal(levelToAtmosphereProgress(1), 0);
+  assert.equal(levelToAtmosphereProgress(8), 1);
+  assert.equal(levelToAtmosphereProgress(15), 1);
+
+  const lvl1 = computeAtmosphere(1);
+  assert.equal(lvl1.stage, 'sunrise');
+  assert.equal(lvl1.sunOpacity > 0.7, true);
+  assert.equal(lvl1.rainIntensity, 0);
+  assert.equal(lvl1.lightningChance, 0);
+
+  const lvl3 = computeAtmosphere(3);
+  assert.equal(lvl3.stage, 'morning');
+  assert.equal(lvl3.cloudAlpha > lvl1.cloudAlpha, true);
+
+  const lvl5 = computeAtmosphere(5);
+  assert.equal(lvl5.stage, 'dusk');
+  assert.equal(lvl5.starAlpha > lvl3.starAlpha, true);
+
+  const lvl8 = computeAtmosphere(8);
+  assert.equal(lvl8.stage, 'storm');
+  assert.equal(lvl8.sunOpacity, 0);
+  assert.equal(lvl8.rainIntensity, 1);
+  assert.equal(lvl8.lightningChance > 0.5, true);
+  assert.equal(lvl8.cloudAlpha > 0.8, true);
+
+  // Renderer interpolates atmosphere smoothly toward target level and resets to sunrise cleanly
+  const renderer = new BalanceRenderer('classic');
+  assert.equal(renderer.getAtmosphereState().stage, 'sunrise');
+  renderer.setAtmosphereLevel(8);
+  for (let i = 0; i < 180; i++) {
+    renderer.tickVisuals(1 / 60);
+  }
+  const settled = renderer.getAtmosphereState();
+  assert.equal(settled.stage, 'storm');
+  assert.equal(settled.rainIntensity > 0.9, true);
+
+  renderer.resetEffects();
+  assert.equal(renderer.getAtmosphereState().stage, 'sunrise');
+  assert.equal(renderer.getAtmosphereState().rainIntensity, 0);
+});
+
+test('shop system awards victory coins, purchases skins & items/upgrades, and activates edge shield save', () => {
+  let shop = createInitialShopState();
+  assert.equal(shop.coins, STARTER_COINS);
+  assert.equal(isSkinUnlocked(shop, 'classic'), true);
+  assert.equal(isSkinUnlocked(shop, 'cyber'), false);
+
+  // Victory coins scale with level, combo, difficulty, and coin_multiplier upgrade
+  const baseCoins = calculateTargetVictoryCoins({
+    level: 1,
+    combo: 1,
+    difficulty: 'normal',
+    coinMultiplierLevel: 0,
+  });
+  const boostedCoins = calculateTargetVictoryCoins({
+    level: 3,
+    combo: 3,
+    difficulty: 'hard',
+    coinMultiplierLevel: 2,
+  });
+  assert.equal(baseCoins >= 12, true);
+  assert.equal(boostedCoins > baseCoins, true);
+
+  // Cannot buy expensive skin without enough coins
+  const failBuy = buySkin(shop, 'prism');
+  assert.equal(failBuy.success, false);
+  assert.equal(isSkinUnlocked(failBuy.nextState, 'prism'), false);
+
+  // Earn victory coins and purchase cyber skin (220 coins)
+  shop = awardCoins(shop, 300);
+  const buyCyber = buySkin(shop, 'cyber');
+  assert.equal(buyCyber.success, true);
+  shop = buyCyber.nextState;
+  assert.equal(isSkinUnlocked(shop, 'cyber'), true);
+  assert.equal(shop.coins, STARTER_COINS + 300 - 220);
+
+  // Buy consumable (edge_shield 120) and upgrade (target_boost 200)
+  shop = awardCoins(shop, 200);
+  const buyShield = buyConsumable(shop, 'edge_shield');
+  assert.equal(buyShield.success, true);
+  shop = buyShield.nextState;
+  assert.equal(shop.consumables.edge_shield, 1);
+
+  const buyBoost = buyUpgrade(shop, 'target_boost');
+  assert.equal(buyBoost.success, true);
+  shop = buyBoost.nextState;
+  assert.equal(shop.upgrades.target_boost, 1);
+  assert.equal(getTargetChargeMultiplier(shop) > 1, true);
+
+  // Consuming edge_shield decrements stock cleanly
+  shop = consumeConsumable(shop, 'edge_shield');
+  assert.equal(shop.consumables.edge_shield, 0);
+
+  // Physics edgeShieldsRemaining saves the ball once before falling
+  const shieldSim = createInitialPhysicsState(12345, 'normal');
+  shieldSim.edgeShieldsRemaining = 1;
+  let sawShieldSave = false;
+  for (let i = 0; i < 60 * 5; i++) {
+    const events = stepPhysics(shieldSim, 1 / 60, 1);
+    if (events.some((e) => e.type === 'shield_save')) {
+      sawShieldSave = true;
+      break;
+    }
+  }
+  assert.equal(sawShieldSave, true);
+  assert.equal(shieldSim.edgeShieldsRemaining, 0);
+  assert.equal(shieldSim.isFalling, false);
+  assert.equal(shieldSim.ballVel < 0, true);
+});
+
+test('BalanceRenderer spawns a full-screen confetti explosion with thousands of particles on new high score', () => {
+  const renderer = new BalanceRenderer('classic');
+  assert.equal(renderer.getActiveParticleCount(), 0);
+
+  renderer.spawnConfettiExplosion(2000, 1280, 720);
+  assert.equal(renderer.getActiveParticleCount(), 2000);
+  assert.equal(renderer.hasActiveEffects(), true);
+
+  // Additional world-space impact burst uses remaining ring buffer capacity without discarding confetti
+  renderer.spawnBurst(0, -28, 18, '#fde047');
+  assert.equal(renderer.getActiveParticleCount(), 2018);
+
+  // Confetti decays cleanly to zero after max lifetime
+  for (let i = 0; i < 60 * 4; i++) {
+    renderer.tickVisuals(1 / 60);
+  }
+  assert.equal(renderer.getActiveParticleCount(), 0);
+
+  // resetEffects immediately clears active confetti
+  renderer.spawnConfettiExplosion(2000, 1280, 720);
+  assert.equal(renderer.getActiveParticleCount(), 2000);
+  renderer.resetEffects();
+  assert.equal(renderer.getActiveParticleCount(), 0);
+});
+

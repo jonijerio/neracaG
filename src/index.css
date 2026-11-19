@@ -37,3 +37,238 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+@keyframes neracaEnterUp {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes neracaDrawerIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(-18px, 0, 0) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes neracaModalFade {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes neracaModalCardIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0) scale(0.94);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes neracaPop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.22);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes neracaFloatUp {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.9);
+  }
+  18% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1.04);
+  }
+  75% {
+    opacity: 1;
+    transform: translate3d(0, -14px, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -24px, 0) scale(0.95);
+  }
+}
+
+@keyframes neracaSheen {
+  0%,
+  55% {
+    transform: translate3d(-140%, 0, 0) skewX(-20deg);
+    opacity: 0;
+  }
+  65% {
+    opacity: 0.45;
+  }
+  85% {
+    transform: translate3d(240%, 0, 0) skewX(-20deg);
+    opacity: 0;
+  }
+  100% {
+    transform: translate3d(240%, 0, 0) skewX(-20deg);
+    opacity: 0;
+  }
+}
+
+@keyframes neracaShimmer {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(200%, 0, 0);
+  }
+}
+
+@keyframes neracaAlertIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -8px, 0) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes neracaDangerPulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes neracaSparkOut {
+  0% {
+    opacity: 1;
+    transform: rotate(var(--spark-rot, 0deg)) translate3d(0, -4px, 0) scale(0.5);
+  }
+  60% {
+    opacity: 0.95;
+    transform: rotate(var(--spark-rot, 0deg)) translate3d(0, -22px, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--spark-rot, 0deg)) translate3d(0, -30px, 0) scale(0.35);
+  }
+}
+
+@keyframes neracaRingPulse {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.65);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.75);
+  }
+}
+
+.neraca-enter-up {
+  animation: neracaEnterUp 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.neraca-drawer-in {
+  animation: neracaDrawerIn 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.neraca-modal-backdrop {
+  animation: neracaModalFade 200ms ease-out both;
+}
+
+.neraca-modal-card {
+  animation: neracaModalCardIn 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.neraca-pop {
+  animation: neracaPop 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.neraca-float-up {
+  animation: neracaFloatUp 1150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.neraca-sheen {
+  animation: neracaSheen 3.6s ease-in-out infinite;
+}
+
+.neraca-shimmer {
+  animation: neracaShimmer 1.4s linear infinite;
+}
+
+.neraca-alert-in {
+  animation: neracaAlertIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.neraca-danger-pulse {
+  animation: neracaDangerPulse 750ms ease-in-out infinite;
+}
+
+.neraca-spark-ray {
+  animation: neracaSparkOut 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.neraca-ring-pulse {
+  animation: neracaRingPulse 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.neraca-btn-tactile {
+  transition: transform 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease,
+    box-shadow 180ms ease;
+}
+
+.neraca-btn-tactile:hover:not(:disabled) {
+  transform: translate3d(0, -1.5px, 0);
+}
+
+.neraca-btn-tactile:active:not(:disabled) {
+  transform: translate3d(0, 0.5px, 0) scale(0.975);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .neraca-enter-up,
+  .neraca-drawer-in,
+  .neraca-modal-backdrop,
+  .neraca-modal-card,
+  .neraca-pop,
+  .neraca-float-up,
+  .neraca-sheen,
+  .neraca-shimmer,
+  .neraca-alert-in,
+  .neraca-danger-pulse,
+  .neraca-spark-ray,
+  .neraca-ring-pulse {
+    animation: none !important;
+  }
+
+  .neraca-btn-tactile:hover:not(:disabled),
+  .neraca-btn-tactile:active:not(:disabled) {
+    transform: none !important;
+  }
+}
+

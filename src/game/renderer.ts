@@ -1,12 +1,38 @@
+import {
+  AtmosphereState,
+  computeAtmosphereFromProgress,
+  levelToAtmosphereProgress,
+} from './atmosphere';
 import { ballBoardToWorld, clamp } from './physics';
 import { SpecialRewardId } from './missions';
 import { SKIN_PRESETS, SkinConfig, SkinId, getSkinConfig } from './skins';
-import { GamePhase, PHYSICS_CONSTANTS, PhysicsState } from './types';
+import {
+  GamePhase,
+  MONSTER_PRESETS,
+  MonsterEntity,
+  PHYSICS_CONSTANTS,
+  PhysicsState,
+} from './types';
 
 const C = PHYSICS_CONSTANTS;
 
+const PARTICLE_POOL_SIZE = 2600;
+
+const CONFETTI_PALETTE = [
+  '#fde047',
+  '#f59e0b',
+  '#34d399',
+  '#38bdf8',
+  '#fb7185',
+  '#c084fc',
+  '#f472b6',
+  '#f4f1ea',
+] as const;
+
 interface Particle {
   active: boolean;
+  space: 'world' | 'screen';
+  kind: 'spark' | 'confetti';
   x: number;
   y: number;
   vx: number;
@@ -14,6 +40,12 @@ interface Particle {
   life: number;
   maxLife: number;
   size: number;
+  aspect: number;
+  rotation: number;
+  rotSpeed: number;
+  flipSpeed: number;
+  wobbleFreq: number;
+  phase: number;
   color: string;
 }
 
@@ -85,14 +117,22 @@ export class BalanceRenderer {
   private shakeImpulseX = 0;
   private shakeImpulseY = 0;
   private animTime = 0;
-  private bgCache: HTMLCanvasElement | null = null;
-  private bgCacheW = 0;
-  private bgCacheH = 0;
+  private atmosphereProgress = 0;
+  private targetAtmosphereProgress = 0;
+  private lightningFlash = 0;
+  private lightningCooldown = 2.4;
+  private lastRenderWidth = 1280;
+  private lastRenderHeight = 720;
+  private gridCache: HTMLCanvasElement | null = null;
+  private gridCacheW = 0;
+  private gridCacheH = 0;
 
   constructor(initialSkin: SkinId = 'classic') {
     this.skinId = initialSkin in SKIN_PRESETS ? initialSkin : 'classic';
-    this.particles = Array.from({ length: 72 }, () => ({
+    this.particles = Array.from({ length: PARTICLE_POOL_SIZE }, () => ({
       active: false,
+      space: 'world',
+      kind: 'spark',
       x: 0,
       y: 0,
       vx: 0,
@@ -100,6 +140,12 @@ export class BalanceRenderer {
       life: 0,
       maxLife: 1,
       size: 3,
+      aspect: 1,
+      rotation: 0,
+      rotSpeed: 0,
+      flipSpeed: 0,
+      wobbleFreq: 0,
+      phase: 0,
       color: '#e89b2d',
     }));
     this.ambientParticles = Array.from({ length: 56 }, () => ({
@@ -175,6 +221,14 @@ export class BalanceRenderer {
     return this.activeRewards.has(rewardId);
   }
 
+  public setAtmosphereLevel(level: number): void {
+    this.targetAtmosphereProgress = levelToAtmosphereProgress(level);
+  }
+
+  public getAtmosphereState(): AtmosphereState {
+    return computeAtmosphereFromProgress(this.atmosphereProgress);
+  }
+
   public resetEffects(): void {
     for (const p of this.particles) p.active = false;
     for (const a of this.ambientParticles) a.active = false;
@@ -186,6 +240,10 @@ export class BalanceRenderer {
     this.trauma = 0;
     this.shakeImpulseX = 0;
     this.shakeImpulseY = 0;
+    this.atmosphereProgress = 0;
+    this.targetAtmosphereProgress = 0;
+    this.lightningFlash = 0;
+    this.lightningCooldown = 2.4;
   }
 
   public hasActiveEffects(): boolean {
@@ -218,6 +276,14 @@ export class BalanceRenderer {
     let count = 0;
     for (let i = 0; i < this.ambientParticles.length; i++) {
       if (this.ambientParticles[i].active) count += 1;
+    }
+    return count;
+  }
+
+  public getActiveParticleCount(): number {
+    let count = 0;
+    for (let i = 0; i < this.particles.length; i++) {
+      if (this.particles[i].active) count += 1;
     }
     return count;
   }
@@ -349,6 +415,8 @@ export class BalanceRenderer {
       const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.45;
       const speed = 55 + Math.random() * 145;
       p.active = true;
+      p.space = 'world';
+      p.kind = 'spark';
       p.x = worldX;
       p.y = worldY;
       p.vx = Math.cos(angle) * speed;
@@ -356,7 +424,71 @@ export class BalanceRenderer {
       p.life = 0;
       p.maxLife = 0.45 + Math.random() * 0.35;
       p.size = 2.4 + Math.random() * 2.8;
+      p.aspect = 1;
+      p.rotation = 0;
+      p.rotSpeed = 0;
+      p.flipSpeed = 0;
+      p.wobbleFreq = 0;
+      p.phase = 0;
       p.color = color ?? fallbackColors[i % fallbackColors.length];
+    }
+  }
+
+  /**
+   * Triggers a full-screen confetti explosion using thousands of small particles
+   * allocated from the existing canvas particle ring buffer.
+   */
+  public spawnConfettiExplosion(
+    count = 2000,
+    width = this.lastRenderWidth,
+    height = this.lastRenderHeight
+  ): void {
+    const w = Math.max(320, width);
+    const h = Math.max(240, height);
+    const total = clamp(Math.round(count), 1, this.particles.length);
+    const skinColors = this.getSkin().fx.particleColors;
+    const minDim = Math.min(w, h);
+
+    // 5 simultaneous burst origins across the viewport + full-screen scatter
+    const cannons = [
+      { cx: w * 0.5, cy: h * 0.46 },
+      { cx: w * 0.18, cy: h * 0.38 },
+      { cx: w * 0.82, cy: h * 0.38 },
+      { cx: w * 0.32, cy: h * 0.72 },
+      { cx: w * 0.68, cy: h * 0.72 },
+    ];
+
+    for (let i = 0; i < total; i++) {
+      const p = this.particles[this.particleCursor];
+      this.particleCursor = (this.particleCursor + 1) % this.particles.length;
+
+      const isScatter = i % 5 === 0;
+      const cannon = cannons[i % cannons.length];
+      const angle = Math.random() * Math.PI * 2;
+      const speed = isScatter
+        ? 90 + Math.random() * (minDim * 0.65)
+        : 180 + Math.random() * (minDim * 1.15);
+
+      p.active = true;
+      p.space = 'screen';
+      p.kind = 'confetti';
+      p.x = isScatter ? Math.random() * w : cannon.cx + (Math.random() - 0.5) * 32;
+      p.y = isScatter ? Math.random() * h * 0.88 : cannon.cy + (Math.random() - 0.5) * 28;
+      p.vx = Math.cos(angle) * speed;
+      p.vy = Math.sin(angle) * speed - (isScatter ? 110 : 190);
+      p.life = 0;
+      p.maxLife = 1.9 + Math.random() * 1.65;
+      p.size = 1.8 + Math.random() * 2.2;
+      p.aspect = 0.45 + Math.random() * 0.45;
+      p.rotation = Math.random() * Math.PI * 2;
+      p.rotSpeed = (Math.random() - 0.5) * 14;
+      p.flipSpeed = 6 + Math.random() * 9;
+      p.wobbleFreq = 4 + Math.random() * 5;
+      p.phase = Math.random() * Math.PI * 2;
+      p.color =
+        i % 4 === 0
+          ? skinColors[i % skinColors.length]
+          : CONFETTI_PALETTE[i % CONFETTI_PALETTE.length];
     }
   }
 
@@ -375,6 +507,23 @@ export class BalanceRenderer {
 
   public tickVisuals(dt: number): void {
     this.animTime += dt;
+    const atmoDiff = this.targetAtmosphereProgress - this.atmosphereProgress;
+    if (Math.abs(atmoDiff) > 0.0005) {
+      this.atmosphereProgress += atmoDiff * Math.min(1, dt * 1.6);
+    } else {
+      this.atmosphereProgress = this.targetAtmosphereProgress;
+    }
+
+    this.lightningFlash = Math.max(0, this.lightningFlash - dt * 4.8);
+    const atmo = this.getAtmosphereState();
+    if (atmo.lightningChance > 0.02) {
+      this.lightningCooldown -= dt;
+      if (this.lightningCooldown <= 0) {
+        this.lightningFlash = 0.72 + Math.random() * 0.28;
+        this.lightningCooldown = Math.max(1.1, 3.6 - atmo.lightningChance * 2.2 + Math.random() * 2.4);
+      }
+    }
+
     this.trauma = Math.max(0, this.trauma - dt * 2.1);
     const impulseDecay = Math.exp(-14 * dt);
     this.shakeImpulseX *= impulseDecay;
@@ -416,6 +565,7 @@ export class BalanceRenderer {
       s.radius = C.BALL_RADIUS * 0.7 + (s.maxRadius - C.BALL_RADIUS * 0.7) * eased;
     }
 
+    const confettiDrag = Math.exp(-2.05 * dt);
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
       if (!p.active) continue;
@@ -424,9 +574,17 @@ export class BalanceRenderer {
         p.active = false;
         continue;
       }
-      p.vy += 260 * dt;
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
+      if (p.kind === 'confetti') {
+        p.vx *= confettiDrag;
+        p.vy = p.vy * confettiDrag + 215 * dt;
+        p.x += (p.vx + Math.sin(p.life * p.wobbleFreq + p.phase) * 44) * dt;
+        p.y += p.vy * dt;
+        p.rotation += p.rotSpeed * dt;
+      } else {
+        p.vy += 260 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
     }
 
     for (let i = 0; i < this.callouts.length; i++) {
@@ -441,38 +599,25 @@ export class BalanceRenderer {
     }
   }
 
-  private ensureBackgroundCache(width: number, height: number): HTMLCanvasElement | null {
+  private ensureGridCache(width: number, height: number): HTMLCanvasElement | null {
     if (typeof document === 'undefined') return null;
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
-    if (this.bgCache && this.bgCacheW === w && this.bgCacheH === h) {
-      return this.bgCache;
+    if (this.gridCache && this.gridCacheW === w && this.gridCacheH === h) {
+      return this.gridCache;
     }
-    const offscreen = this.bgCache ?? document.createElement('canvas');
+    const offscreen = this.gridCache ?? document.createElement('canvas');
     offscreen.width = w;
     offscreen.height = h;
     const octx = offscreen.getContext('2d');
     if (!octx) return null;
 
-    const bgGrad = octx.createRadialGradient(
-      w * 0.5,
-      h * 0.48,
-      20,
-      w * 0.5,
-      h * 0.5,
-      Math.max(w, h) * 0.75
-    );
-    bgGrad.addColorStop(0, '#212832');
-    bgGrad.addColorStop(0.6, '#171c23');
-    bgGrad.addColorStop(1, '#101419');
-    octx.fillStyle = bgGrad;
-    octx.fillRect(0, 0, w, h);
-
+    octx.clearRect(0, 0, w, h);
     this.drawDraftingGrid(octx, w, h);
 
-    this.bgCache = offscreen;
-    this.bgCacheW = w;
-    this.bgCacheH = h;
+    this.gridCache = offscreen;
+    this.gridCacheW = w;
+    this.gridCacheH = h;
     return offscreen;
   }
 
@@ -487,23 +632,21 @@ export class BalanceRenderer {
     if (skinId) {
       this.setSkin(skinId);
     }
+    this.lastRenderWidth = width;
+    this.lastRenderHeight = height;
     const skin = this.getSkin();
+    this.setAtmosphereLevel(phase === 'title' ? 1 : state.level);
 
     ctx.save();
-
-    // 1. Background: Cached Architectural Oiled Slate Drafting Table
-    const cachedBg = this.ensureBackgroundCache(width, height);
-    if (cachedBg) {
-      ctx.drawImage(cachedBg, 0, 0, width, height);
-    } else {
-      ctx.fillStyle = '#171c23';
-      ctx.fillRect(0, 0, width, height);
-    }
 
     // Compute layout center & scale so board fits comfortably on any viewport
     const isDesktopTitle = phase === 'title' && width >= 900;
     const fulcrumScreenX = isDesktopTitle ? width * 0.65 : width * 0.5;
     const fulcrumScreenY = phase === 'title' && width < 900 ? height * 0.69 : height * 0.54;
+
+    // 1. Dynamic Level-Based Sky Background (Calm Sunrise -> Stormy Night)
+    const sunScreenX = isDesktopTitle ? width * 0.84 : width * 0.22;
+    this.drawDynamicBackground(ctx, width, height, state, sunScreenX);
 
     const availW = isDesktopTitle ? width * 0.58 : width * 0.9;
     const availH = height * 0.72;
@@ -526,12 +669,15 @@ export class BalanceRenderer {
       this.drawWindEffects(ctx, state);
     }
 
-    // 4. Tilting Board, Target Zone & Power-Up Collectible
+    // 4. Tilting Board, Target Zone, Power-Up Collectible & Balance-Disturbing Monsters
     ctx.save();
     ctx.rotate(state.boardAngle);
     this.drawBoard(ctx, state, phase, skin);
     if (phase !== 'title' && state.powerUp) {
       this.drawPowerUpCollectible(ctx, state);
+    }
+    if (phase !== 'title' && state.monsters.length > 0) {
+      this.drawMonsters(ctx, state);
     }
     ctx.restore();
 
@@ -541,10 +687,168 @@ export class BalanceRenderer {
     this.drawMotionTrail(ctx, state, skin);
     this.drawBall(ctx, state, skin);
 
-    // 6. Pooled Impact Particles & Score Callouts
+    // 6. Pooled Impact Particles & Score Callouts (world space)
     this.drawParticlesAndCallouts(ctx);
 
     ctx.restore();
+
+    // 7. Full-Screen Confetti Explosion Particles (screen space)
+    this.drawScreenParticles(ctx);
+  }
+
+  private drawDynamicBackground(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    state: PhysicsState,
+    sunCenterX: number
+  ): void {
+    const atmo = this.getAtmosphereState();
+
+    // Base sky gradient
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, height);
+    skyGrad.addColorStop(0, atmo.skyTop);
+    skyGrad.addColorStop(0.55, atmo.skyMid);
+    skyGrad.addColorStop(1, atmo.skyHorizon);
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    // Subtle atmospheric horizon / sun glow
+    if (atmo.glowAlpha > 0.01) {
+      const sunY = height * atmo.sunYNorm;
+      const glowGrad = ctx.createRadialGradient(
+        sunCenterX,
+        sunY,
+        12,
+        sunCenterX,
+        sunY,
+        Math.max(width, height) * 0.62
+      );
+      glowGrad.addColorStop(0, atmo.glowColor);
+      glowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.save();
+      ctx.globalAlpha = atmo.glowAlpha;
+      ctx.fillStyle = glowGrad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+
+    // Distant stars emerging from dusk into night
+    if (atmo.starAlpha > 0.02) {
+      ctx.save();
+      ctx.fillStyle = '#f8fafc';
+      for (let i = 0; i < 28; i++) {
+        const sx = (((i * 197 + 43) % 997) / 997) * width;
+        const sy = (((i * 313 + 79) % 547) / 547) * (height * 0.64);
+        const twinkle = 0.45 + 0.55 * Math.sin(this.animTime * 2.1 + i * 1.9);
+        ctx.globalAlpha = atmo.starAlpha * twinkle;
+        const size = i % 5 === 0 ? 1.8 : 1.1;
+        ctx.beginPath();
+        ctx.arc(sx, sy, size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Rising / setting sun disc
+    if (atmo.sunOpacity > 0.03) {
+      const sunY = height * atmo.sunYNorm;
+      ctx.save();
+      ctx.globalAlpha = atmo.sunOpacity * 0.25;
+      ctx.fillStyle = atmo.sunColor;
+      ctx.beginPath();
+      ctx.arc(sunCenterX, sunY, atmo.sunRadius * 1.65, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalAlpha = atmo.sunOpacity * 0.85;
+      ctx.beginPath();
+      ctx.arc(sunCenterX, sunY, atmo.sunRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Drifting clouds (soft morning wisps -> heavy storm deck)
+    if (atmo.cloudAlpha > 0.02) {
+      ctx.save();
+      ctx.fillStyle = atmo.cloudTint;
+      const spanW = width + 420;
+      for (let i = 0; i < 6; i++) {
+        const baseSpeed = atmo.cloudSpeed * (0.75 + (i % 3) * 0.22);
+        const cx = ((i * 290 + this.animTime * baseSpeed) % spanW) - 210;
+        const cy = height * (0.14 + (i % 3) * 0.13) + Math.sin(this.animTime * 0.4 + i) * 6;
+        const rx = 125 + (i % 3) * 48;
+        const ry = 20 + (i % 2) * 10;
+        ctx.globalAlpha = atmo.cloudAlpha * (i % 2 === 0 ? 0.36 : 0.26);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = atmo.cloudAlpha * 0.28;
+        ctx.beginPath();
+        ctx.ellipse(cx + rx * 0.38, cy - ry * 0.35, rx * 0.56, ry * 0.82, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(cx - rx * 0.34, cy - ry * 0.22, rx * 0.48, ry * 0.72, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Stormy night lightning flash & distant bolt
+    if (this.lightningFlash > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = this.lightningFlash * 0.2;
+      ctx.fillStyle = '#bae6fd';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.globalAlpha = this.lightningFlash * 0.65;
+      ctx.strokeStyle = '#e0f2fe';
+      ctx.lineWidth = 2.2;
+      const bx = width * 0.22;
+      ctx.beginPath();
+      ctx.moveTo(bx, height * 0.06);
+      ctx.lineTo(bx - 16, height * 0.19);
+      ctx.lineTo(bx + 10, height * 0.23);
+      ctx.lineTo(bx - 12, height * 0.39);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Storm rain streaks
+    if (atmo.rainIntensity > 0.04) {
+      const dropCount = Math.round(atmo.rainIntensity * 72);
+      const windTilt = state.windPhase === 'active' ? state.windDir * 5.5 : -2.6;
+      ctx.save();
+      ctx.strokeStyle = `rgba(186, 230, 253, ${0.14 + atmo.rainIntensity * 0.24})`;
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      for (let i = 0; i < dropCount; i++) {
+        const seedX = ((i * 151 + 29) % 1009) / 1009;
+        const speedY = 480 + (i % 5) * 90;
+        const yOff = ((this.animTime * speedY + i * 73) % (height + 40)) - 20;
+        const xOff = (seedX * width + this.animTime * windTilt * 32 + width * 4) % width;
+        const len = 14 + atmo.rainIntensity * 14;
+        ctx.moveTo(xOff, yOff);
+        ctx.lineTo(xOff + windTilt * 1.4, yOff + len);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Subtle top HUD readability vignette
+    const topScrim = ctx.createLinearGradient(0, 0, 0, 108);
+    topScrim.addColorStop(0, 'rgba(10, 14, 22, 0.45)');
+    topScrim.addColorStop(1, 'rgba(10, 14, 22, 0)');
+    ctx.fillStyle = topScrim;
+    ctx.fillRect(0, 0, width, 108);
+
+    // Cached architectural drafting grid overlay
+    const cachedGrid = this.ensureGridCache(width, height);
+    if (cachedGrid) {
+      ctx.save();
+      ctx.globalAlpha = atmo.gridAlpha / 0.032;
+      ctx.drawImage(cachedGrid, 0, 0, width, height);
+      ctx.restore();
+    }
   }
 
   private drawDraftingGrid(ctx: CanvasRenderingContext2D, width: number, height: number): void {
@@ -1622,7 +1926,7 @@ export class BalanceRenderer {
   private drawParticlesAndCallouts(ctx: CanvasRenderingContext2D): void {
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
-      if (!p.active) continue;
+      if (!p.active || p.space !== 'world') continue;
       const alpha = 1 - p.life / p.maxLife;
       ctx.globalAlpha = alpha;
       ctx.fillStyle = p.color;
@@ -1645,5 +1949,434 @@ export class BalanceRenderer {
       ctx.fillText(c.text, c.x, c.y);
     }
     ctx.globalAlpha = 1;
+  }
+
+  private drawScreenParticles(ctx: CanvasRenderingContext2D): void {
+    let anyScreen = false;
+    for (let i = 0; i < this.particles.length; i++) {
+      if (this.particles[i].active && this.particles[i].space === 'screen') {
+        anyScreen = true;
+        break;
+      }
+    }
+    if (!anyScreen) return;
+
+    ctx.save();
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      if (!p.active || p.space !== 'screen') continue;
+
+      const lifeRatio = p.life / p.maxLife;
+      const alpha = lifeRatio > 0.72 ? (1 - lifeRatio) / 0.28 : 1;
+      const hw = p.size;
+      const hh = p.size * p.aspect * (0.28 + 0.72 * Math.abs(Math.cos(p.life * p.flipSpeed + p.phase)));
+      const cos = Math.cos(p.rotation);
+      const sin = Math.sin(p.rotation);
+      const dxX = cos * hw;
+      const dxY = sin * hw;
+      const dyX = -sin * hh;
+      const dyY = cos * hh;
+
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.moveTo(p.x - dxX - dyX, p.y - dxY - dyY);
+      ctx.lineTo(p.x + dxX - dyX, p.y + dxY - dyY);
+      ctx.lineTo(p.x + dxX + dyX, p.y + dxY + dyY);
+      ctx.lineTo(p.x - dxX + dyX, p.y - dxY + dyY);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawMonsters(ctx: CanvasRenderingContext2D, state: PhysicsState): void {
+    const topY = -C.BOARD_THICKNESS * 0.5;
+    for (let i = 0; i < state.monsters.length; i++) {
+      const m = state.monsters[i];
+      if (m.phase === 'telegraph') {
+        this.drawMonsterTelegraph(ctx, m, topY);
+      } else {
+        this.drawActiveMonster(ctx, m, state.boardAngle, topY);
+      }
+    }
+  }
+
+  private drawMonsterTelegraph(
+    ctx: CanvasRenderingContext2D,
+    m: MonsterEntity,
+    topY: number
+  ): void {
+    const preset = MONSTER_PRESETS[m.kind];
+    const pulse = 0.45 + 0.5 * Math.sin(this.animTime * 18);
+    const shortTag =
+      m.kind === 'monkey'
+        ? 'MONYET!'
+        : m.kind === 'alien'
+          ? 'ALIEN UFO!'
+          : m.kind === 'human'
+            ? 'MANUSIA!'
+            : m.kind === 'robot'
+              ? 'ROBOT!'
+              : 'SLIME!';
+
+    ctx.save();
+    ctx.translate(m.x, topY);
+
+    // Landing warning pad on the board
+    ctx.globalAlpha = 0.3 + pulse * 0.4;
+    ctx.fillStyle = preset.color;
+    ctx.fillRect(-20, -4, 40, 5);
+
+    // Vertical drop guide line
+    ctx.strokeStyle = preset.color;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.lineTo(0, -64);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Exclamation badge & label
+    ctx.globalAlpha = 0.75 + pulse * 0.25;
+    ctx.fillStyle = '#141920';
+    ctx.strokeStyle = preset.color;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.roundRect(-36, -92, 72, 22, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = preset.color;
+    ctx.font = '800 10px "Plus Jakarta Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(shortTag, 0, -77);
+
+    ctx.restore();
+  }
+
+  private drawActiveMonster(
+    ctx: CanvasRenderingContext2D,
+    m: MonsterEntity,
+    boardAngle: number,
+    topY: number
+  ): void {
+    // Gentle fade blink right before leaving
+    if (m.timer < 0.75 && Math.floor(m.timer * 10) % 2 === 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      this.drawMonsterBody(ctx, m, boardAngle, topY);
+      ctx.restore();
+      return;
+    }
+    this.drawMonsterBody(ctx, m, boardAngle, topY);
+  }
+
+  private drawMonsterBody(
+    ctx: CanvasRenderingContext2D,
+    m: MonsterEntity,
+    boardAngle: number,
+    topY: number
+  ): void {
+    ctx.save();
+    ctx.translate(m.x, topY);
+
+    if (m.kind === 'monkey') {
+      const hopY = -m.hopHeight;
+      // Ground shadow shrinks as monkey jumps higher
+      const shadowScale = clamp(1 - m.hopHeight / 42, 0.45, 1);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.36)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 12 * shadowScale, 3.2 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.translate(0, hopY);
+      // Curling tail
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      const tailWag = Math.sin(this.animTime * 9) * 5;
+      ctx.moveTo(-m.dir * 8, -10);
+      ctx.bezierCurveTo(-m.dir * 20, -14 + tailWag, -m.dir * 22, -28 + tailWag, -m.dir * 13, -30);
+      ctx.stroke();
+
+      // Torso & legs
+      ctx.fillStyle = '#92400e';
+      ctx.beginPath();
+      ctx.ellipse(0, -14, 11, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fcd34d';
+      ctx.beginPath();
+      ctx.ellipse(0, -13, 6.5, 7.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ears
+      ctx.fillStyle = '#92400e';
+      ctx.beginPath();
+      ctx.arc(-11, -28, 4.5, 0, Math.PI * 2);
+      ctx.arc(11, -28, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fde68a';
+      ctx.beginPath();
+      ctx.arc(-11, -28, 2.3, 0, Math.PI * 2);
+      ctx.arc(11, -28, 2.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Head & muzzle
+      ctx.fillStyle = '#92400e';
+      ctx.beginPath();
+      ctx.arc(0, -28, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fde68a';
+      ctx.beginPath();
+      ctx.ellipse(0, -25, 7, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Mischievous eyes & grin
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(-3.5, -30, 1.8, 0, Math.PI * 2);
+      ctx.arc(3.5, -30, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(0, -25.5, 3.2, 0.2, Math.PI - 0.2);
+      ctx.stroke();
+    } else if (m.kind === 'alien') {
+      // Hovering UFO above board with pulsing tractor beam cone down to board surface
+      const hoverY = -104 + Math.sin(this.animTime * 4.2) * 5;
+      const beamPulse = 0.18 + 0.1 * Math.sin(this.animTime * 9);
+
+      // Tractor beam cone reaching board surface
+      const beamGrad = ctx.createLinearGradient(0, hoverY + 8, 0, 0);
+      beamGrad.addColorStop(0, `rgba(34, 211, 238, ${beamPulse * 1.8})`);
+      beamGrad.addColorStop(1, `rgba(52, 211, 153, ${beamPulse * 0.55})`);
+      ctx.fillStyle = beamGrad;
+      ctx.beginPath();
+      ctx.moveTo(-14, hoverY + 8);
+      ctx.lineTo(14, hoverY + 8);
+      ctx.lineTo(36, 0);
+      ctx.lineTo(-36, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      // Tractor beam rings
+      const ringProgress = (this.animTime * 1.4) % 1;
+      const ringY = hoverY + 14 + (1 - ringProgress) * (-hoverY - 18);
+      const ringW = 12 + (1 - ringProgress) * 20;
+      ctx.strokeStyle = `rgba(103, 232, 249, ${ringProgress * 0.65})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(0, ringY, ringW, 4, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // UFO Saucer Body (slightly stabilized against board tilt)
+      ctx.translate(0, hoverY);
+      ctx.rotate(-boardAngle * 0.65);
+
+      // Glass dome
+      ctx.fillStyle = 'rgba(165, 243, 252, 0.38)';
+      ctx.strokeStyle = '#67e8f9';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(0, -4, 15, Math.PI, 0);
+      ctx.fill();
+      ctx.stroke();
+
+      // Little green alien inside dome
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.arc(0, -8, 6.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath();
+      ctx.ellipse(-2.5, -8.5, 1.8, 2.5, -0.25, 0, Math.PI * 2);
+      ctx.ellipse(2.5, -8.5, 1.8, 2.5, 0.25, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Metallic saucer ring
+      const hullGrad = ctx.createLinearGradient(0, -6, 0, 8);
+      hullGrad.addColorStop(0, '#cbd5e1');
+      hullGrad.addColorStop(0.5, '#475569');
+      hullGrad.addColorStop(1, '#1e293b');
+      ctx.fillStyle = hullGrad;
+      ctx.beginPath();
+      ctx.ellipse(0, 2, 27, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      // Blinking rim lights
+      for (let i = -2; i <= 2; i++) {
+        const lit = (Math.floor(this.animTime * 8) + i + 5) % 3 === 0;
+        ctx.fillStyle = lit ? '#22d3ee' : '#0ea5e9';
+        ctx.beginPath();
+        ctx.arc(i * 9.5, 2.5, 2.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (m.kind === 'human') {
+      // Heavyweight stomper pushing board down
+      const stompSquash = Math.abs(Math.sin(m.hopPhase)) * 2.5;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 15, 3.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Heavy boots
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(-10, -7, 7, 7);
+      ctx.fillRect(3, -7, 7, 7);
+
+      // Stocky torso
+      ctx.fillStyle = '#e11d48';
+      ctx.beginPath();
+      ctx.roundRect(-12, -28 + stompSquash, 24, 22 - stompSquash * 0.5, 6);
+      ctx.fill();
+      ctx.strokeStyle = '#fda4af';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      // Arms crossed / flexing
+      ctx.fillStyle = '#fdba74';
+      ctx.beginPath();
+      ctx.arc(-13, -18 + stompSquash, 4.2, 0, Math.PI * 2);
+      ctx.arc(13, -18 + stompSquash, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Head + headband
+      ctx.fillStyle = '#fed7aa';
+      ctx.beginPath();
+      ctx.arc(0, -37 + stompSquash, 9.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#be123c';
+      ctx.fillRect(-9.5, -42 + stompSquash, 19, 4);
+
+      // Determined brows & eyes
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(-5, -36 + stompSquash, 3, 2.2);
+      ctx.fillRect(2, -36 + stompSquash, 3, 2.2);
+
+      // Downward heavy weight arrow cue
+      const arrowDrop = (this.animTime * 14) % 8;
+      ctx.strokeStyle = 'rgba(251, 113, 133, 0.8)';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-6, -54 + arrowDrop);
+      ctx.lineTo(0, -49 + arrowDrop);
+      ctx.lineTo(6, -54 + arrowDrop);
+      ctx.stroke();
+    } else if (m.kind === 'robot') {
+      // Spring-bumper dashing robot
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.36)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 14, 3.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Wheels / treads
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(-7, -5, 4.5, 0, Math.PI * 2);
+      ctx.arc(7, -5, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Side spring bumpers
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-14, -18);
+      ctx.lineTo(-19, -18);
+      ctx.moveTo(14, -18);
+      ctx.lineTo(19, -18);
+      ctx.stroke();
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(-21, -23, 3, 10);
+      ctx.fillRect(18, -23, 3, 10);
+
+      // Chassis
+      const botGrad = ctx.createLinearGradient(0, -32, 0, -8);
+      botGrad.addColorStop(0, '#c4b5fd');
+      botGrad.addColorStop(1, '#5b21b6');
+      ctx.fillStyle = botGrad;
+      ctx.strokeStyle = '#ddd6fe';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(-13, -32, 26, 23, 5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Glowing visor
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(-9, -27, 18, 7);
+      ctx.fillStyle = '#38bdf8';
+      const eyeOffset = m.dir * 3;
+      ctx.beginPath();
+      ctx.arc(-3 + eyeOffset, -23.5, 2, 0, Math.PI * 2);
+      ctx.arc(4 + eyeOffset, -23.5, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Antenna beacon
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(0, -32);
+      ctx.lineTo(0, -40);
+      ctx.stroke();
+      ctx.fillStyle = Math.sin(this.animTime * 16) > 0 ? '#f43f5e' : '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(0, -42, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (m.kind === 'slime') {
+      // Sticky goo puddle along board surface
+      const wobble = Math.sin(m.hopPhase) * 2.5;
+      ctx.fillStyle = 'rgba(74, 222, 128, 0.34)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 40, 5.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(134, 239, 172, 0.55)';
+      ctx.fillRect(-36, -3, 72, 3.5);
+
+      // Bouncy jelly slime dome
+      const w = 16 + wobble;
+      const h = 23 - wobble * 0.8;
+      const slimeGrad = ctx.createRadialGradient(-4, -h * 0.65, 2, 0, -h * 0.4, 20);
+      slimeGrad.addColorStop(0, '#bbf7d0');
+      slimeGrad.addColorStop(0.5, '#22c55e');
+      slimeGrad.addColorStop(1, '#15803d');
+      ctx.fillStyle = slimeGrad;
+      ctx.beginPath();
+      ctx.moveTo(-w, 0);
+      ctx.bezierCurveTo(-w, -h * 1.15, w, -h * 1.15, w, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#86efac';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      // Glossy highlight & googly eyes
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+      ctx.beginPath();
+      ctx.ellipse(-5, -h * 0.62, 3.2, 1.8, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(-4.5, -h * 0.42, 3, 0, Math.PI * 2);
+      ctx.arc(4.5, -h * 0.42, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath();
+      ctx.arc(-4, -h * 0.42, 1.5, 0, Math.PI * 2);
+      ctx.arc(5, -h * 0.42, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
   }
 }

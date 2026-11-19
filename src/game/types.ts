@@ -68,6 +68,76 @@ export const POWERUP_PRESETS: Record<PowerUpType, { id: PowerUpType; label: stri
   },
 };
 
+export type MonsterKind = 'monkey' | 'alien' | 'human' | 'robot' | 'slime';
+
+export type MonsterPhase = 'telegraph' | 'active';
+
+export interface MonsterPreset {
+  kind: MonsterKind;
+  name: string;
+  warningText: string;
+  color: string;
+  duration: number;
+  weight: number;
+}
+
+export const MONSTER_PRESETS: Record<MonsterKind, MonsterPreset> = {
+  monkey: {
+    kind: 'monkey',
+    name: 'Monyet Jahil',
+    warningText: 'Monyet melompat di papan!',
+    color: '#f59e0b',
+    duration: 5.4,
+    weight: 1.55,
+  },
+  alien: {
+    kind: 'alien',
+    name: 'Alien UFO',
+    warningText: 'UFO mengincar bola dengan sinar traktor!',
+    color: '#22d3ee',
+    duration: 5.8,
+    weight: 0.55,
+  },
+  human: {
+    kind: 'human',
+    name: 'Manusia Berat',
+    warningText: 'Manusia berat menginjak sisi papan!',
+    color: '#fb7185',
+    duration: 5.0,
+    weight: 2.35,
+  },
+  robot: {
+    kind: 'robot',
+    name: 'Robot Pegas',
+    warningText: 'Robot meluncur & menabrak bola!',
+    color: '#a78bfa',
+    duration: 5.2,
+    weight: 1.25,
+  },
+  slime: {
+    kind: 'slime',
+    name: 'Slime Lengket',
+    warningText: 'Slime membuat papan lengket & berat!',
+    color: '#4ade80',
+    duration: 6.0,
+    weight: 1.15,
+  },
+};
+
+export interface MonsterEntity {
+  id: number;
+  kind: MonsterKind;
+  phase: MonsterPhase;
+  x: number;
+  vx: number;
+  dir: -1 | 1;
+  timer: number;
+  maxTimer: number;
+  hopPhase: number;
+  hopHeight: number;
+  hitCooldown: number;
+}
+
 export interface SimEvent {
   type:
     | 'target_complete'
@@ -79,6 +149,11 @@ export interface SimEvent {
     | 'hard_bounce'
     | 'powerup_spawned'
     | 'powerup_collected'
+    | 'monster_telegraph'
+    | 'monster_spawn'
+    | 'monster_hit'
+    | 'monster_leave'
+    | 'shield_save'
     | 'ball_fall_start'
     | 'game_over';
   x?: number;
@@ -87,6 +162,7 @@ export interface SimEvent {
   dir?: -1 | 1;
   intensity?: number;
   powerUpType?: PowerUpType;
+  monsterKind?: MonsterKind;
 }
 
 export interface PhysicsState {
@@ -143,6 +219,15 @@ export interface PhysicsState {
   powerUpSpawnTimer: number;
   activePowerUp: ActivePowerUp | null;
 
+  // Balance-disturbing monsters
+  monsters: MonsterEntity[];
+  monsterSpawnTimer: number;
+  nextMonsterId: number;
+
+  // Shop modifiers active for run
+  targetChargeMultiplier: number;
+  edgeShieldsRemaining: number;
+
   // Deterministic PRNG seed
   rngState: number;
 }
@@ -151,6 +236,12 @@ export interface MissionHudBanner {
   title: string;
   bonusPoints: number;
   rewardName?: string;
+}
+
+export interface ActiveMonsterHud {
+  kind: MonsterKind;
+  phase: MonsterPhase;
+  x: number;
 }
 
 export interface HudSnapshot {
@@ -166,7 +257,12 @@ export interface HudSnapshot {
   windDir: -1 | 1;
   edgeDanger: number;
   activePowerUp: ActivePowerUp | null;
+  activeMonster: ActiveMonsterHud | null;
   missionBanner: MissionHudBanner | null;
+  runCoins: number;
+  totalCoins: number;
+  edgeShields: number;
+  tiltDir?: -1 | 0 | 1;
 }
 
 export interface EndRunSnapshot {
@@ -181,6 +277,8 @@ export interface EndRunSnapshot {
   missionsCompletedCount: number;
   missionBonusPoints: number;
   unlockedRewardNames: string[];
+  coinsEarned: number;
+  totalCoins: number;
 }
 
 export const PHYSICS_CONSTANTS = {
@@ -200,4 +298,6 @@ export const PHYSICS_CONSTANTS = {
   WIND_GRACE_TIME: 7.0,
   WIND_TELEGRAPH_TIME: 1.15,
   WIND_ACTIVE_TIME: 2.35,
+  MONSTER_GRACE_TIME: 5.5,
+  MONSTER_TELEGRAPH_TIME: 1.05,
 } as const;

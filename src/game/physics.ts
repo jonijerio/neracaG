@@ -1,12 +1,23 @@
 import {
   DIFFICULTY_PRESETS,
   DifficultyLevel,
+  MONSTER_PRESETS,
+  MonsterEntity,
+  MonsterKind,
   PHYSICS_CONSTANTS,
   POWERUP_PRESETS,
   PhysicsState,
   PowerUpType,
   SimEvent,
 } from './types';
+
+export const MONSTER_KINDS: readonly MonsterKind[] = [
+  'monkey',
+  'alien',
+  'human',
+  'robot',
+  'slime',
+];
 
 const C = PHYSICS_CONSTANTS;
 
@@ -63,6 +74,13 @@ export function createInitialPhysicsState(
     powerUp: null,
     powerUpSpawnTimer: 4.0,
     activePowerUp: null,
+
+    monsters: [],
+    monsterSpawnTimer: C.MONSTER_GRACE_TIME,
+    nextMonsterId: 1,
+
+    targetChargeMultiplier: 1,
+    edgeShieldsRemaining: 0,
 
     rngState: seed >>> 0,
   };
@@ -130,6 +148,62 @@ export function getTargetPointValue(level: number, combo: number): number {
   return baseValue * Math.max(1, combo);
 }
 
+function pickMonsterPosition(state: PhysicsState, kind: MonsterKind): number {
+  const minAbs = kind === 'human' ? 125 : kind === 'robot' ? 170 : 68;
+  const maxAbs = kind === 'robot' ? 215 : 205;
+  let candidate = 0;
+  for (let i = 0; i < 8; i++) {
+    const side: -1 | 1 = nextRandom(state) < 0.5 ? -1 : 1;
+    const dist = minAbs + nextRandom(state) * (maxAbs - minAbs);
+    candidate = Math.round(side * dist);
+    const overlapsExisting = state.monsters.some((m) => Math.abs(m.x - candidate) < 58);
+    if (!overlapsExisting && Math.abs(candidate - state.ballX) >= 34) {
+      break;
+    }
+  }
+  return candidate;
+}
+
+export function spawnMonster(
+  state: PhysicsState,
+  kindOverride?: MonsterKind,
+  xOverride?: number
+): MonsterEntity {
+  const kind =
+    kindOverride ??
+    MONSTER_KINDS[Math.floor(nextRandom(state) * MONSTER_KINDS.length) % MONSTER_KINDS.length];
+  const preset = MONSTER_PRESETS[kind];
+  const x =
+    xOverride !== undefined
+      ? clamp(Math.round(xOverride), -220, 220)
+      : pickMonsterPosition(state, kind);
+  const dir: -1 | 1 =
+    kind === 'robot'
+      ? x >= 0
+        ? -1
+        : 1
+      : x >= 0
+        ? 1
+        : -1;
+  const speed = kind === 'robot' ? 125 : kind === 'alien' ? 76 : kind === 'monkey' ? 22 : 0;
+
+  const entity: MonsterEntity = {
+    id: state.nextMonsterId++,
+    kind,
+    phase: 'telegraph',
+    x,
+    vx: dir * speed,
+    dir,
+    timer: C.MONSTER_TELEGRAPH_TIME,
+    maxTimer: preset.duration,
+    hopPhase: 0,
+    hopHeight: 0,
+    hitCooldown: 0,
+  };
+  state.monsters.push(entity);
+  return entity;
+}
+
 /**
  * Advances simulation by clamped frame dt using 4 sub-steps for crisp collision/rolling accuracy.
  * Returns simulation events generated during this step.
@@ -183,13 +257,157 @@ export function stepPhysics(
 
     const isSlowMotion = state.activePowerUp?.type === 'slow_motion';
     const isStabilizer = state.activePowerUp?.type === 'stabilizer';
+    const isTitleShowcase = targetAngleOverride !== undefined && targetAngleOverride !== null;
 
-    // 1. Update Board Tilt Angle (responsiveness scaled by difficulty + Stabilizer modifier)
+    // 1. Update Balance-Disturbing Monsters (suppressed during title showcase)
+    let monsterTorque = 0;
+    let monsterBallAccel = 0;
+    let monsterExtraFriction = 0;
+
+    if (!isTitleShowcase) {
+      const maxMonsters = state.level >= 5 ? 2 : 1;
+      if (state.monsters.length < maxMonsters) {
+        state.monsterSpawnTimer -= subDt;
+        if (state.monsterSpawnTimer <= 0) {
+          const spawned = spawnMonster(state);
+          events.push({
+            type: 'monster_telegraph',
+            monsterKind: spawned.kind,
+            x: spawned.x,
+            dir: spawned.dir,
+          });
+          const baseCooldown = Math.max(3.0, 6.2 - (state.level - 1) * 0.4);
+          state.monsterSpawnTimer = baseCooldown + nextRandom(state) * 1.6;
+        }
+      }
+
+      const remainingMonsters: MonsterEntity[] = [];
+      for (let i = 0; i < state.monsters.length; i++) {
+        const m = state.monsters[i];
+        const mPreset = MONSTER_PRESETS[m.kind];
+        m.hitCooldown = Math.max(0, m.hitCooldown - subDt);
+
+        if (m.phase === 'telegraph') {
+          m.timer -= subDt;
+          if (m.timer <= 0) {
+            m.phase = 'active';
+            m.timer = m.maxTimer;
+            events.push({
+              type: 'monster_spawn',
+              monsterKind: m.kind,
+              x: m.x,
+              dir: m.dir,
+              intensity: m.kind === 'human' ? 0.65 : 0.44,
+            });
+          }
+          remainingMonsters.push(m);
+          continue;
+        }
+
+        // Active monster behavior & physics disturbance
+        const normX = m.x / 200;
+        const levelScale = 1 + Math.min(0.45, Math.max(0, state.level - 1) * 0.06);
+
+        if (m.kind === 'monkey') {
+          m.hopPhase += subDt * 4.8;
+          const wave = Math.sin(m.hopPhase);
+          m.hopHeight = Math.max(0, wave * 28);
+          m.x += m.vx * subDt;
+          if (m.x > 210) {
+            m.x = 210;
+            m.vx = -Math.abs(m.vx);
+            m.dir = -1;
+          } else if (m.x < -210) {
+            m.x = -210;
+            m.vx = Math.abs(m.vx);
+            m.dir = 1;
+          }
+          const stompMultiplier = m.hopHeight < 6 ? 2.45 : 0.65;
+          monsterTorque += normX * mPreset.weight * stompMultiplier * levelScale;
+        } else if (m.kind === 'alien') {
+          m.hopPhase += subDt * 3.4;
+          m.x += m.vx * subDt;
+          if (m.x > 205) {
+            m.x = 205;
+            m.vx = -Math.abs(m.vx);
+            m.dir = -1;
+          } else if (m.x < -205) {
+            m.x = -205;
+            m.vx = Math.abs(m.vx);
+            m.dir = 1;
+          }
+          // Tractor beam pulls or nudges ball horizontally when beneath UFO cone
+          const dxBall = m.x - state.ballX;
+          if (Math.abs(dxBall) < 105) {
+            const pullDir = Math.abs(dxBall) > 6 ? Math.sign(dxBall) : m.dir;
+            monsterBallAccel += pullDir * (82 + Math.min(48, (state.level - 1) * 8));
+          }
+          monsterTorque += Math.sin(m.hopPhase) * mPreset.weight * 1.15;
+        } else if (m.kind === 'human') {
+          m.hopPhase += subDt * 2.6;
+          // Heavy steady downward leverage on chosen wing
+          monsterTorque += normX * mPreset.weight * 2.55 * levelScale;
+          // Skilled counter-tilting upward shakes the heavy human off sooner
+          if (state.boardAngle * Math.sign(m.x) < -0.15) {
+            m.timer -= subDt * 0.85;
+          }
+        } else if (m.kind === 'robot') {
+          m.hopPhase += subDt * 8.0;
+          m.x += m.vx * subDt;
+          if (m.x > 215) {
+            m.x = 215;
+            m.vx = -Math.abs(m.vx);
+            m.dir = -1;
+          } else if (m.x < -215) {
+            m.x = -215;
+            m.vx = Math.abs(m.vx);
+            m.dir = 1;
+          }
+          monsterTorque += normX * mPreset.weight * 1.85 * levelScale;
+          if (m.hitCooldown <= 0 && Math.abs(state.ballX - m.x) <= C.BALL_RADIUS + 15) {
+            const pushDir: -1 | 1 = state.ballX >= m.x ? 1 : -1;
+            state.ballVel += pushDir * 145;
+            m.vx = -pushDir * Math.max(105, Math.abs(m.vx));
+            m.dir = m.vx >= 0 ? 1 : -1;
+            m.hitCooldown = 0.75;
+            events.push({
+              type: 'monster_hit',
+              monsterKind: 'robot',
+              x: m.x,
+              dir: pushDir,
+              intensity: 0.65,
+            });
+          }
+        } else if (m.kind === 'slime') {
+          m.hopPhase += subDt * 5.2;
+          monsterTorque += normX * mPreset.weight * 1.8 * levelScale;
+          if (Math.abs(state.ballX - m.x) <= 40) {
+            monsterExtraFriction += 4.2;
+          }
+        }
+
+        m.timer -= subDt;
+        if (m.timer <= 0) {
+          state.score += 25;
+          events.push({
+            type: 'monster_leave',
+            monsterKind: m.kind,
+            x: m.x,
+            points: 25,
+          });
+        } else {
+          remainingMonsters.push(m);
+        }
+      }
+      state.monsters = remainingMonsters;
+    }
+
+    // 1b. Update Board Tilt Angle (responsiveness scaled by difficulty + Stabilizer + monster torque)
     const effectiveAccel = isStabilizer ? preset.boardAccel * 0.55 : preset.boardAccel;
     const effectiveDamping = isStabilizer ? preset.boardDamping * 1.45 : preset.boardDamping;
     const effectiveMaxAngVel = isStabilizer ? preset.maxAngularVel * 0.62 : preset.maxAngularVel;
 
-    if (targetAngleOverride !== undefined && targetAngleOverride !== null) {
+    if (isTitleShowcase) {
       const clampedTarget = clamp(targetAngleOverride, -C.MAX_ANGLE_RAD, C.MAX_ANGLE_RAD);
       const diff = clampedTarget - state.boardAngle;
       state.boardAngularVel = clamp(diff * 12, -effectiveMaxAngVel * 1.4, effectiveMaxAngVel * 1.4);
@@ -201,6 +419,7 @@ export function stepPhysics(
         // Gentle leveling assist when no tilt input is held during Stabilizer
         state.boardAngularVel -= state.boardAngle * 1.3 * subDt;
       }
+      state.boardAngularVel += monsterTorque * (isStabilizer ? 0.58 : 1.0) * subDt;
       // Exponential angular velocity damping for weighty precision feel
       state.boardAngularVel *= Math.exp(-effectiveDamping * subDt);
       state.boardAngularVel = clamp(state.boardAngularVel, -effectiveMaxAngVel, effectiveMaxAngVel);
@@ -270,11 +489,12 @@ export function stepPhysics(
       }
     }
 
-    // 3. Ball Rolling Physics along the tilted board (friction scaled by difficulty + Slow Motion modifier)
+    // 3. Ball Rolling Physics along the tilted board (friction scaled by difficulty + Slow Motion + Slime)
     const gravityScale = isSlowMotion ? 0.58 : 1.0;
-    const effectiveFriction = isSlowMotion ? preset.ballFriction * 2.0 : preset.ballFriction;
+    const effectiveFriction =
+      (isSlowMotion ? preset.ballFriction * 2.0 : preset.ballFriction) + monsterExtraFriction;
     const slopeAccel = C.GRAVITY * gravityScale * Math.sin(state.boardAngle);
-    const totalAccel = slopeAccel + state.windStrength * gravityScale;
+    const totalAccel = slopeAccel + (state.windStrength + monsterBallAccel) * gravityScale;
     state.ballVel += totalAccel * subDt;
     state.ballVel *= Math.exp(-effectiveFriction * subDt);
     state.ballX += state.ballVel * subDt;
@@ -361,24 +581,39 @@ export function stepPhysics(
     }
 
     if (Math.abs(state.ballX) > fallThreshold) {
-      state.isFalling = true;
-      state.fallTimer = 0;
-      const worldPos = ballBoardToWorld(state.boardAngle, state.ballX);
-      const cos = Math.cos(state.boardAngle);
-      const sin = Math.sin(state.boardAngle);
-      state.fallWorldX = worldPos.x;
-      state.fallWorldY = worldPos.y;
-      // Convert board velocity to world velocity + outward tip impulse
-      const tipImpulse = Math.sign(state.ballX) * 65;
-      state.fallVx = (state.ballVel + tipImpulse) * cos;
-      state.fallVy = (state.ballVel + tipImpulse) * sin + 35;
-      events.push({
-        type: 'ball_fall_start',
-        x: state.ballX,
-        dir: state.ballX > 0 ? 1 : -1,
-        intensity: clamp(Math.abs(state.ballVel) / 260, 0.55, 1),
-      });
-      continue;
+      if (state.edgeShieldsRemaining > 0) {
+        state.edgeShieldsRemaining -= 1;
+        const side: -1 | 1 = state.ballX >= 0 ? 1 : -1;
+        state.ballX = side * (C.BOARD_HALF_LEN - 26);
+        state.ballVel = -side * 125;
+        state.boardAngularVel *= 0.2;
+        state.edgeDanger = 0.5;
+        events.push({
+          type: 'shield_save',
+          x: state.ballX,
+          dir: side,
+          intensity: 0.85,
+        });
+      } else {
+        state.isFalling = true;
+        state.fallTimer = 0;
+        const worldPos = ballBoardToWorld(state.boardAngle, state.ballX);
+        const cos = Math.cos(state.boardAngle);
+        const sin = Math.sin(state.boardAngle);
+        state.fallWorldX = worldPos.x;
+        state.fallWorldY = worldPos.y;
+        // Convert board velocity to world velocity + outward tip impulse
+        const tipImpulse = Math.sign(state.ballX) * 65;
+        state.fallVx = (state.ballVel + tipImpulse) * cos;
+        state.fallVy = (state.ballVel + tipImpulse) * sin + 35;
+        events.push({
+          type: 'ball_fall_start',
+          x: state.ballX,
+          dir: state.ballX > 0 ? 1 : -1,
+          intensity: clamp(Math.abs(state.ballVel) / 260, 0.55, 1),
+        });
+        continue;
+      }
     }
 
     // 5. Target Zone & Scoring
@@ -398,7 +633,8 @@ export function stepPhysics(
         // Center precision charges faster (up to 1.35x speed) and level tightens hold pacing
         const precisionBonus = 1 + 0.35 * (1 - distToTarget / state.targetHalfWidth);
         const holdTime = getTargetHoldTime(state.level);
-        state.targetProgress += (subDt * precisionBonus) / holdTime;
+        state.targetProgress +=
+          (subDt * precisionBonus * Math.max(1, state.targetChargeMultiplier)) / holdTime;
         state.comboDecayTimer = 4.5;
 
         if (state.targetProgress >= 1) {
