@@ -1,0 +1,6 @@
+{
+  "name": "Neraca — Game Keseimbangan Bola",
+  "description": "Game keseimbangan fisika 2D di mana pemain memiringkan papan untuk menjaga bola tetap seimbang dan meraih target skor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
