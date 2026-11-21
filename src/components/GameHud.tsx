@@ -36,7 +36,9 @@ export const GameHud: React.FC<GameHudProps> = ({
   const prevCoinsRef = useRef<number>(hud.runCoins);
   const prevLevelRef = useRef<number>(hud.level);
   const prevComboRef = useRef<number>(hud.combo);
+  const prevTargetsRef = useRef<number>(hud.targetsCleared);
   const [coinFx, setCoinFx] = useState<{ key: number; delta: number }>({ key: 0, delta: 0 });
+  const [scoreFxKey, setScoreFxKey] = useState<number>(0);
   const [comboPulseKey, setComboPulseKey] = useState<number>(hud.combo > 1 ? 1 : 0);
   const [levelBanner, setLevelBanner] = useState<number | null>(null);
 
@@ -49,6 +51,13 @@ export const GameHud: React.FC<GameHudProps> = ({
   }, [hud.runCoins]);
 
   useEffect(() => {
+    if (hud.targetsCleared > prevTargetsRef.current) {
+      setScoreFxKey((k) => k + 1);
+    }
+    prevTargetsRef.current = hud.targetsCleared;
+  }, [hud.targetsCleared]);
+
+  useEffect(() => {
     if (shouldPulseCombo(prevComboRef.current, hud.combo)) {
       setComboPulseKey((k) => k + 1);
     }
@@ -58,7 +67,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   useEffect(() => {
     if (hud.level > prevLevelRef.current) {
       setLevelBanner(hud.level);
-      const timer = window.setTimeout(() => setLevelBanner(null), 1600);
+      const timer = window.setTimeout(() => setLevelBanner(null), 1850);
       prevLevelRef.current = hud.level;
       return () => window.clearTimeout(timer);
     }
@@ -74,7 +83,24 @@ export const GameHud: React.FC<GameHudProps> = ({
         label: POWERUP_PRESETS[hud.activePowerUp.type].label,
         remaining: hud.activePowerUp.remaining,
         pct: Math.max(0, Math.min(100, (hud.activePowerUp.remaining / hud.activePowerUp.duration) * 100)),
-        isSlow: hud.activePowerUp.type === 'slow_motion',
+        colorClass:
+          hud.activePowerUp.type === 'slow_motion'
+            ? 'text-[#38bdf8]'
+            : hud.activePowerUp.type === 'target_magnet'
+              ? 'text-[#a78bfa]'
+              : 'text-[#34d399]',
+        barClass:
+          hud.activePowerUp.type === 'slow_motion'
+            ? 'bg-[#38bdf8]'
+            : hud.activePowerUp.type === 'target_magnet'
+              ? 'bg-[#a78bfa]'
+              : 'bg-[#34d399]',
+        auraGradient:
+          hud.activePowerUp.type === 'slow_motion'
+            ? 'linear-gradient(180deg, rgba(56, 189, 248, 0.16) 0%, rgba(56, 189, 248, 0) 100%)'
+            : hud.activePowerUp.type === 'target_magnet'
+              ? 'linear-gradient(180deg, rgba(167, 139, 250, 0.18) 0%, rgba(167, 139, 250, 0) 100%)'
+              : 'linear-gradient(180deg, rgba(52, 211, 153, 0.16) 0%, rgba(52, 211, 153, 0) 100%)',
       }
     : null;
 
@@ -125,12 +151,21 @@ export const GameHud: React.FC<GameHudProps> = ({
         <div
           key={levelBanner}
           data-testid={compact ? undefined : 'hud-level-up'}
-          className="neraca-alert-in flex flex-col items-center text-center"
+          className="neraca-level-zoom relative flex flex-col items-center text-center"
         >
-          <span className="text-[11px] font-bold uppercase tracking-wider text-[#fde047] sm:text-xs">
+          <SparkBurst
+            burstKey={levelBanner}
+            color="#fde047"
+            intense
+            className="absolute top-2"
+          />
+          <span
+            className="relative z-10 text-[11px] font-extrabold uppercase tracking-wider text-[#fde047] sm:text-xs"
+            style={{ textShadow: '0 0 14px rgba(250, 204, 21, 0.65), 0 2px 6px rgba(0,0,0,0.85)' }}
+          >
             Naik ke Level {levelBanner}!
           </span>
-          <span className="text-[10px] font-medium text-[#cbd5e1] sm:text-[11px]">
+          <span className="relative z-10 text-[10px] font-medium text-[#e2e8f0] sm:text-[11px]">
             {atmosphere.label}
           </span>
         </div>
@@ -187,7 +222,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           className="neraca-alert-in flex flex-col items-center gap-1"
         >
           <div className="flex items-center gap-2 text-[11px] font-bold tracking-wide sm:text-xs">
-            <span className={activePowerUpInfo.isSlow ? 'text-[#38bdf8]' : 'text-[#34d399]'}>
+            <span className={activePowerUpInfo.colorClass}>
               {activePowerUpInfo.label}
             </span>
             <span className="font-mono-num text-[#cbd5e1]">
@@ -196,11 +231,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
           <div className="relative h-1.5 w-28 overflow-hidden rounded-full bg-[#252f3a]">
             <div
-              className={
-                activePowerUpInfo.isSlow
-                  ? 'relative h-full overflow-hidden bg-[#38bdf8]'
-                  : 'relative h-full overflow-hidden bg-[#34d399]'
-              }
+              className={`relative h-full overflow-hidden ${activePowerUpInfo.barClass}`}
               style={{ width: `${activePowerUpInfo.pct}%` }}
             >
               <span className="neraca-shimmer absolute inset-y-0 left-0 w-10 bg-white/45" />
@@ -237,6 +268,19 @@ export const GameHud: React.FC<GameHudProps> = ({
         />
       )}
 
+      {/* High-Combo Streak Perimeter Aura (x3+) */}
+      {comboStyle.auraOpacity > 0 && (
+        <div
+          aria-hidden="true"
+          data-testid="hud-combo-aura"
+          className="pointer-events-none fixed inset-x-0 top-0 z-0 h-28 transition-opacity duration-300"
+          style={{
+            opacity: comboStyle.auraOpacity,
+            background: comboStyle.auraGradient,
+          }}
+        />
+      )}
+
       {/* Subtle Active Power-Up Perimeter Glow */}
       {activePowerUpInfo && (
         <div
@@ -244,9 +288,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           data-testid="hud-powerup-aura"
           className="pointer-events-none fixed inset-x-0 top-0 z-0 h-20 transition-opacity duration-200"
           style={{
-            background: activePowerUpInfo.isSlow
-              ? 'linear-gradient(180deg, rgba(56, 189, 248, 0.16) 0%, rgba(56, 189, 248, 0) 100%)'
-              : 'linear-gradient(180deg, rgba(52, 211, 153, 0.16) 0%, rgba(52, 211, 153, 0) 100%)',
+            background: activePowerUpInfo.auraGradient,
           }}
         />
       )}
@@ -264,26 +306,37 @@ export const GameHud: React.FC<GameHudProps> = ({
                 key={`score-${hud.targetsCleared}`}
                 data-testid="hud-score"
                 className="neraca-pop font-mono-num text-2xl font-bold leading-none text-[#f4f1ea] sm:text-4xl"
-                style={{ textShadow: '0 2px 6px rgba(0,0,0,0.6)' }}
+                style={{ textShadow: '0 2px 8px rgba(0,0,0,0.65), 0 0 18px rgba(244,241,234,0.12)' }}
               >
                 {Math.round(hud.score)}
               </div>
+
+              {scoreFxKey > 0 && (
+                <SparkBurst
+                  burstKey={scoreFxKey}
+                  color={comboStyle.visible ? comboStyle.color : '#34d399'}
+                  intense={hud.combo >= 3}
+                  className="pointer-events-none -ml-1"
+                />
+              )}
 
               {comboStyle.visible && (
                 <div
                   key={`combo-float-${comboPulseKey}`}
                   data-testid="hud-combo-multiplier"
                   aria-live="polite"
-                  className="neraca-combo-pulse relative inline-flex -translate-y-0.5 items-center whitespace-nowrap font-mono-num text-xs font-extrabold tracking-tight sm:text-base"
+                  className={`neraca-combo-pulse relative inline-flex -translate-y-0.5 items-center whitespace-nowrap font-mono-num text-xs font-extrabold tracking-tight sm:text-base ${
+                    comboStyle.tier !== 'base' ? 'neraca-combo-fire' : ''
+                  }`}
                   style={{
                     color: comboStyle.color,
-                    textShadow: `0 2px 8px rgba(0,0,0,0.8), 0 0 14px ${comboStyle.glowColor}`,
+                    textShadow: `0 2px 8px rgba(0,0,0,0.85), 0 0 16px ${comboStyle.glowColor}`,
                   }}
                 >
                   {comboPulseKey > 0 && (
                     <span
                       aria-hidden="true"
-                      className="neraca-ring-pulse pointer-events-none absolute -inset-x-2 -inset-y-1 rounded-full border"
+                      className="neraca-ring-pulse pointer-events-none absolute -inset-x-2.5 -inset-y-1 rounded-full border-2"
                       style={{ borderColor: comboStyle.color }}
                     />
                   )}

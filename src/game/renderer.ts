@@ -18,7 +18,17 @@ import {
 const C = PHYSICS_CONSTANTS;
 
 const PARTICLE_POOL_SIZE = 2600;
+const FIRE_TRAIL_POOL_SIZE = 220;
 const ATMOSPHERE_CROSSFADE_DURATION = 1.65;
+
+export const FIRE_TRAIL_SPEED_MIN = 125;
+export const FIRE_TRAIL_SPEED_MAX = 310;
+
+export function computeFireTrailIntensity(speed: number): number {
+  const abs = Math.abs(speed);
+  if (abs < FIRE_TRAIL_SPEED_MIN) return 0;
+  return clamp((abs - FIRE_TRAIL_SPEED_MIN) / (FIRE_TRAIL_SPEED_MAX - FIRE_TRAIL_SPEED_MIN), 0, 1);
+}
 
 const CONFETTI_PALETTE = [
   '#fde047',
@@ -98,6 +108,21 @@ interface TrailNode {
   maxAge: number;
 }
 
+interface FireTrailParticle {
+  active: boolean;
+  x: number;
+  y: number;
+  prevX: number;
+  prevY: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  size: number;
+  wobblePhase: number;
+  wobbleAmp: number;
+}
+
 export class BalanceRenderer {
   private skinId: SkinId = 'classic';
   private activeRewards: Set<SpecialRewardId> = new Set();
@@ -112,6 +137,10 @@ export class BalanceRenderer {
   private calloutCursor = 0;
   private trailNodes: TrailNode[];
   private trailCursor = 0;
+  private fireParticles: FireTrailParticle[];
+  private fireParticleCursor = 0;
+  private fireEmitAcc = 0;
+  private currentFireIntensity = 0;
   private lastTrailX = 0;
   private lastTrailY = 0;
   private hasLastTrail = false;
@@ -207,6 +236,20 @@ export class BalanceRenderer {
       age: 0,
       maxAge: 0.28,
     }));
+    this.fireParticles = Array.from({ length: FIRE_TRAIL_POOL_SIZE }, () => ({
+      active: false,
+      x: 0,
+      y: 0,
+      prevX: 0,
+      prevY: 0,
+      vx: 0,
+      vy: 0,
+      life: 0,
+      maxLife: 0.4,
+      size: 4,
+      wobblePhase: 0,
+      wobbleAmp: 0,
+    }));
   }
 
   public setSkin(skinId: SkinId): void {
@@ -286,9 +329,13 @@ export class BalanceRenderer {
   public resetEffects(): void {
     for (const p of this.particles) p.active = false;
     for (const a of this.ambientParticles) a.active = false;
+    for (const f of this.fireParticles) f.active = false;
     for (const s of this.shockwaves) s.active = false;
     for (const c of this.callouts) c.active = false;
     for (const t of this.trailNodes) t.active = false;
+    this.fireParticleCursor = 0;
+    this.fireEmitAcc = 0;
+    this.currentFireIntensity = 0;
     this.hasLastTrail = false;
     this.ambientEmitAcc = 0;
     this.trauma = 0;
@@ -368,6 +415,9 @@ export class BalanceRenderer {
     }
     for (let i = 0; i < this.trailNodes.length; i++) {
       if (this.trailNodes[i].active) return true;
+    }
+    for (let i = 0; i < this.fireParticles.length; i++) {
+      if (this.fireParticles[i].active) return true;
     }
     return false;
   }
@@ -475,6 +525,70 @@ export class BalanceRenderer {
       if (this.trailNodes[i].active) count += 1;
     }
     return count;
+  }
+
+  public getActiveFireTrailCount(): number {
+    let count = 0;
+    for (let i = 0; i < this.fireParticles.length; i++) {
+      if (this.fireParticles[i].active) count += 1;
+    }
+    return count;
+  }
+
+  public getFireTrailIntensity(): number {
+    return this.currentFireIntensity;
+  }
+
+  public emitFireTrailForBall(
+    worldX: number,
+    worldY: number,
+    vx: number,
+    vy: number,
+    dt: number
+  ): void {
+    const speed = Math.hypot(vx, vy);
+    const intensity = computeFireTrailIntensity(speed);
+    this.currentFireIntensity = intensity;
+
+    if (intensity <= 0.01 || dt <= 0 || speed <= 0.001) {
+      this.fireEmitAcc = Math.min(this.fireEmitAcc, 0.2);
+      return;
+    }
+
+    const dirX = vx / speed;
+    const dirY = vy / speed;
+    const perpX = -dirY;
+    const perpY = dirX;
+    const emitRate = 54 + intensity * 126;
+    this.fireEmitAcc += emitRate * dt;
+
+    let emitted = 0;
+    while (this.fireEmitAcc >= 1 && emitted < 12) {
+      this.fireEmitAcc -= 1;
+      emitted += 1;
+
+      const f = this.fireParticles[this.fireParticleCursor];
+      this.fireParticleCursor = (this.fireParticleCursor + 1) % this.fireParticles.length;
+
+      const backOffset = C.BALL_RADIUS * (0.22 + Math.random() * 0.56);
+      const lateralOffset = (Math.random() - 0.5) * C.BALL_RADIUS * 1.15;
+      const sx = worldX - dirX * backOffset + perpX * lateralOffset;
+      const sy = worldY - dirY * backOffset + perpY * lateralOffset;
+      const backSpeed = speed * (0.24 + Math.random() * 0.24);
+
+      f.active = true;
+      f.x = sx;
+      f.y = sy;
+      f.prevX = sx + dirX * (6 + intensity * 9);
+      f.prevY = sy + dirY * (6 + intensity * 9);
+      f.vx = -dirX * backSpeed + perpX * (Math.random() - 0.5) * 44;
+      f.vy = -dirY * backSpeed - (24 + intensity * 40) + perpY * (Math.random() - 0.5) * 30;
+      f.life = 0;
+      f.maxLife = 0.24 + intensity * 0.22 + Math.random() * 0.14;
+      f.size = (3.4 + intensity * 4.8) * (0.72 + Math.random() * 0.55);
+      f.wobblePhase = Math.random() * Math.PI * 2;
+      f.wobbleAmp = 16 + intensity * 26;
+    }
   }
 
   public addTrauma(amount: number): void {
@@ -653,6 +767,25 @@ export class BalanceRenderer {
       if (t.age >= t.maxAge) {
         t.active = false;
       }
+    }
+
+    const fireDrag = Math.exp(-3.4 * dt);
+    for (let i = 0; i < this.fireParticles.length; i++) {
+      const f = this.fireParticles[i];
+      if (!f.active) continue;
+      f.life += dt;
+      if (f.life >= f.maxLife) {
+        f.active = false;
+        continue;
+      }
+      f.prevX = f.x;
+      f.prevY = f.y;
+      const lifeRatio = f.life / f.maxLife;
+      f.vx *= fireDrag;
+      f.vy = f.vy * fireDrag - (68 + (1 - lifeRatio) * 42) * dt;
+      const curl = Math.sin(f.wobblePhase + f.life * 19) * f.wobbleAmp * dt;
+      f.x += f.vx * dt + curl * 0.35;
+      f.y += f.vy * dt;
     }
 
     for (let i = 0; i < this.ambientParticles.length; i++) {
@@ -1641,6 +1774,41 @@ export class BalanceRenderer {
     ctx.fillStyle = activeColor;
     ctx.fillRect(tx - hw, topY - 4, hw * 2, 5);
 
+    // Moving target direction chevrons when gliding (Level 4+)
+    if (Math.abs(state.targetVel) > 1) {
+      const moveDir = state.targetVel > 0 ? 1 : -1;
+      const shift = ((this.animTime * 22) % 8) * moveDir;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.8)';
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      const chevronX = tx + moveDir * (hw + 11) + shift * 0.45;
+      const chevronY = topY - 10;
+      ctx.beginPath();
+      ctx.moveTo(chevronX - moveDir * 4, chevronY - 4);
+      ctx.lineTo(chevronX, chevronY);
+      ctx.lineTo(chevronX - moveDir * 4, chevronY + 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Active Magnet Target energy tether between ball and target center
+    if (state.activePowerUp?.type === 'target_magnet' && Math.abs(state.ballX - tx) > 6) {
+      ctx.save();
+      const pulse = 0.45 + 0.35 * Math.sin(this.animTime * 14);
+      ctx.strokeStyle = `rgba(167, 139, 250, ${pulse})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.lineDashOffset = -this.animTime * 36;
+      ctx.beginPath();
+      ctx.moveTo(state.ballX, topY - C.BALL_RADIUS);
+      ctx.quadraticCurveTo((state.ballX + tx) * 0.5, topY - 38, tx, topY - 12);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
     // Bracket posts on target zone edges
     ctx.strokeStyle = activeColor;
     ctx.lineWidth = 2;
@@ -2034,6 +2202,134 @@ export class BalanceRenderer {
       }
     }
     ctx.restore();
+
+    this.drawFireTrailStreak(ctx, state);
+  }
+
+  private drawFireTrailStreak(ctx: CanvasRenderingContext2D, state: PhysicsState): void {
+    let anyActiveParticle = false;
+    for (let i = 0; i < this.fireParticles.length; i++) {
+      if (this.fireParticles[i].active) {
+        anyActiveParticle = true;
+        break;
+      }
+    }
+    const ballSpeed = state.isFalling
+      ? Math.hypot(state.fallVx, state.fallVy)
+      : Math.abs(state.ballVel);
+    const liveIntensity = Math.max(this.currentFireIntensity, computeFireTrailIntensity(ballSpeed));
+    if (!anyActiveParticle && liveIntensity <= 0.02) {
+      return;
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // 1. Tapered multi-stop fire streak ribbon connecting high-velocity trail nodes
+    let prevX = 0;
+    let prevY = 0;
+    let hasPrev = false;
+    for (let i = 0; i < this.trailNodes.length; i++) {
+      const idx = (this.trailCursor + i) % this.trailNodes.length;
+      const t = this.trailNodes[idx];
+      if (!t.active) continue;
+
+      const nodeIntensity = computeFireTrailIntensity(t.speed);
+      const lifeRatio = 1 - t.age / t.maxAge;
+      if (hasPrev && nodeIntensity > 0.02 && lifeRatio > 0.05) {
+        const taper = lifeRatio * lifeRatio;
+        const outerAlpha = clamp(0.46 * nodeIntensity * taper, 0, 0.55);
+        const midAlpha = clamp(0.62 * nodeIntensity * taper, 0, 0.72);
+        const coreAlpha = clamp(0.55 * nodeIntensity * taper, 0, 0.65);
+
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = `rgba(239, 68, 68, ${outerAlpha})`;
+        ctx.lineWidth = C.BALL_RADIUS * (0.55 + 0.95 * nodeIntensity) * taper;
+        ctx.beginPath();
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = `rgba(251, 146, 60, ${midAlpha})`;
+        ctx.lineWidth = C.BALL_RADIUS * (0.34 + 0.56 * nodeIntensity) * taper;
+        ctx.beginPath();
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+
+        if (nodeIntensity > 0.25) {
+          ctx.strokeStyle = `rgba(254, 240, 138, ${coreAlpha})`;
+          ctx.lineWidth = C.BALL_RADIUS * (0.14 + 0.26 * nodeIntensity) * taper;
+          ctx.beginPath();
+          ctx.moveTo(prevX, prevY);
+          ctx.lineTo(t.x, t.y);
+          ctx.stroke();
+        }
+      }
+      prevX = t.x;
+      prevY = t.y;
+      hasPrev = true;
+    }
+
+    // 2. Fading flame streak particles drifting behind the ball
+    for (let i = 0; i < this.fireParticles.length; i++) {
+      const f = this.fireParticles[i];
+      if (!f.active) continue;
+      const progress = clamp(f.life / f.maxLife, 0, 1);
+      const fade = (1 - progress) * (1 - progress);
+      if (fade <= 0.015) continue;
+
+      const tailX = f.prevX - (f.x - f.prevX) * 1.45;
+      const tailY = f.prevY - (f.y - f.prevY) * 1.45;
+      const width = f.size * (0.28 + 0.72 * (1 - progress));
+
+      if (progress < 0.26) {
+        ctx.strokeStyle = `rgba(254, 243, 199, ${fade * 0.88})`;
+        ctx.fillStyle = `rgba(254, 240, 138, ${fade * 0.75})`;
+      } else if (progress < 0.62) {
+        ctx.strokeStyle = `rgba(251, 146, 60, ${fade * 0.82})`;
+        ctx.fillStyle = `rgba(249, 115, 22, ${fade * 0.7})`;
+      } else {
+        ctx.strokeStyle = `rgba(239, 68, 68, ${fade * 0.72})`;
+        ctx.fillStyle = `rgba(220, 38, 38, ${fade * 0.58})`;
+      }
+
+      ctx.lineCap = 'round';
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(tailX, tailY);
+      ctx.lineTo(f.x, f.y);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, width * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 3. Hot ignition halo directly at high-speed ball wake
+    if (liveIntensity > 0.12) {
+      const ballPos = state.isFalling
+        ? { x: state.fallWorldX, y: state.fallWorldY }
+        : ballBoardToWorld(state.boardAngle, state.ballX);
+      const haloR = C.BALL_RADIUS * (1.28 + liveIntensity * 0.55);
+      const grad = ctx.createRadialGradient(
+        ballPos.x,
+        ballPos.y,
+        C.BALL_RADIUS * 0.45,
+        ballPos.x,
+        ballPos.y,
+        haloR
+      );
+      grad.addColorStop(0, `rgba(254, 240, 138, ${0.26 * liveIntensity})`);
+      grad.addColorStop(0.55, `rgba(249, 115, 22, ${0.22 * liveIntensity})`);
+      grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(ballPos.x, ballPos.y, haloR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
   }
 
   private drawAmbientParticles(ctx: CanvasRenderingContext2D): void {
@@ -2124,9 +2420,22 @@ export class BalanceRenderer {
       return;
     }
 
-    const isSlow = pu.type === 'slow_motion';
-    const primary = isSlow ? '#38bdf8' : '#34d399';
-    const glow = isSlow ? 'rgba(56, 189, 248, 0.24)' : 'rgba(52, 211, 153, 0.24)';
+    const primary =
+      pu.type === 'slow_motion'
+        ? '#38bdf8'
+        : pu.type === 'target_magnet'
+          ? '#a78bfa'
+          : pu.type === 'monster_repel'
+            ? '#facc15'
+            : '#34d399';
+    const glow =
+      pu.type === 'slow_motion'
+        ? 'rgba(56, 189, 248, 0.24)'
+        : pu.type === 'target_magnet'
+          ? 'rgba(167, 139, 250, 0.26)'
+          : pu.type === 'monster_repel'
+            ? 'rgba(250, 204, 21, 0.28)'
+            : 'rgba(52, 211, 153, 0.24)';
     const bobY = Math.sin(this.animTime * 4.5) * 3;
     const cy = -C.BOARD_THICKNESS * 0.5 - 22 + bobY;
 
@@ -2155,7 +2464,7 @@ export class BalanceRenderer {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    if (isSlow) {
+    if (pu.type === 'slow_motion') {
       // Clock / Slow-motion emblem
       ctx.beginPath();
       ctx.moveTo(0, -5.5);
@@ -2164,6 +2473,28 @@ export class BalanceRenderer {
       ctx.stroke();
       ctx.beginPath();
       ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (pu.type === 'target_magnet') {
+      // U-shaped magnet emblem
+      ctx.beginPath();
+      ctx.arc(0, 0.5, 4.5, Math.PI, 0, false);
+      ctx.moveTo(-4.5, 0.5);
+      ctx.lineTo(-4.5, 4.5);
+      ctx.moveTo(4.5, 0.5);
+      ctx.lineTo(4.5, 4.5);
+      ctx.stroke();
+    } else if (pu.type === 'monster_repel') {
+      // 4-point shockwave blast star emblem
+      ctx.beginPath();
+      ctx.moveTo(0, -6.5);
+      ctx.lineTo(2, -2);
+      ctx.lineTo(6.5, 0);
+      ctx.lineTo(2, 2);
+      ctx.lineTo(0, 6.5);
+      ctx.lineTo(-2, 2);
+      ctx.lineTo(-6.5, 0);
+      ctx.lineTo(-2, -2);
+      ctx.closePath();
       ctx.fill();
     } else {
       // Stabilizer horizontal level bar + center fulcrum dot

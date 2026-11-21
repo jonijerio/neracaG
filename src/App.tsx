@@ -557,6 +557,7 @@ export default function App() {
         const worldPos = ballBoardToWorld(sim.boardAngle, sim.ballX);
         renderer.recordTrailPoint(worldPos.x, worldPos.y, Math.max(45, Math.abs(sim.ballVel)));
         renderer.emitAmbientForBall(worldPos.x, worldPos.y, sim.ballVel, dt);
+        renderer.emitFireTrailForBall(worldPos.x, worldPos.y, 0, 0, dt);
       } else if (currentPhase === 'playing') {
         const keys = keysHeldRef.current;
         const leftHeld = keys.has('ArrowLeft') || keys.has('KeyA');
@@ -575,15 +576,19 @@ export default function App() {
 
         const events = stepPhysics(sim, dt, tiltInput);
 
-        // Record ball world position & speed for motion trail + ambient skin FX
+        // Record ball world position & speed for motion trail + ambient skin FX + high-velocity fire trail
         if (sim.isFalling) {
           const speed = Math.hypot(sim.fallVx, sim.fallVy);
           renderer.recordTrailPoint(sim.fallWorldX, sim.fallWorldY, speed);
           renderer.emitAmbientForBall(sim.fallWorldX, sim.fallWorldY, speed, dt);
+          renderer.emitFireTrailForBall(sim.fallWorldX, sim.fallWorldY, sim.fallVx, sim.fallVy, dt);
         } else {
           const worldPos = ballBoardToWorld(sim.boardAngle, sim.ballX);
+          const worldVx = sim.ballVel * Math.cos(sim.boardAngle);
+          const worldVy = sim.ballVel * Math.sin(sim.boardAngle);
           renderer.recordTrailPoint(worldPos.x, worldPos.y, sim.ballVel);
           renderer.emitAmbientForBall(worldPos.x, worldPos.y, sim.ballVel, dt);
+          renderer.emitFireTrailForBall(worldPos.x, worldPos.y, worldVx, worldVy, dt);
         }
 
         const skinFx = renderer.getSkin().fx;
@@ -620,13 +625,43 @@ export default function App() {
           } else if (ev.type === 'powerup_collected') {
             powerUpsUsedRef.current += 1;
             const pType = ev.powerUpType ?? 'slow_motion';
-            const color = pType === 'slow_motion' ? '#38bdf8' : '#34d399';
+            const color =
+              pType === 'slow_motion'
+                ? '#38bdf8'
+                : pType === 'target_magnet'
+                  ? '#a78bfa'
+                  : pType === 'monster_repel'
+                    ? '#facc15'
+                    : '#34d399';
             const label = POWERUP_PRESETS[pType].label;
             gameAudio.playPowerUpCollect(pType);
             const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? sim.ballX);
-            renderer.spawnBurst(worldPos.x, worldPos.y, hasSupernova ? 24 : 16, color);
-            renderer.spawnShockwave(worldPos.x, worldPos.y, color, hasSupernova ? 82 : 64);
-            renderer.spawnCallout(worldPos.x, worldPos.y, label, color);
+            if (pType === 'monster_repel') {
+              const repelled = ev.repelledCount ?? 0;
+              const bonusCoins = scaleBonusCoins(
+                repelled * 8 + 4,
+                shopStateRef.current.upgrades.coin_multiplier
+              );
+              runCoinsEarnedRef.current += bonusCoins;
+              const nextShop = awardCoins(shopStateRef.current, bonusCoins);
+              shopStateRef.current = nextShop;
+              setShopState(nextShop);
+              saveShopState(nextShop);
+              renderer.triggerImpactShake(0.75, 0, 0.45);
+              renderer.spawnBurst(worldPos.x, worldPos.y, 28, '#facc15');
+              renderer.spawnShockwave(worldPos.x, worldPos.y, '#facc15', 135);
+              renderer.spawnShockwave(worldPos.x, worldPos.y, '#fde047', 86);
+              renderer.spawnCallout(
+                worldPos.x,
+                worldPos.y - 12,
+                repelled > 0 ? `USIR x${repelled} MONSTER! +${bonusCoins} Koin` : `GELOMBANG KEJUT! +${bonusCoins} Koin`,
+                '#facc15'
+              );
+            } else {
+              renderer.spawnBurst(worldPos.x, worldPos.y, hasSupernova ? 24 : 16, color);
+              renderer.spawnShockwave(worldPos.x, worldPos.y, color, hasSupernova ? 82 : 64);
+              renderer.spawnCallout(worldPos.x, worldPos.y, label, color);
+            }
           } else if (ev.type === 'wind_telegraph') {
             gameAudio.playWindTelegraph();
           } else if (ev.type === 'wind_gust') {
@@ -916,6 +951,10 @@ export default function App() {
         }
       }
 
+      const hasHazard =
+        sim.monsters.length > 0 || sim.windPhase === 'active' || sim.edgeDanger > 0.65;
+      gameAudio.updateBgm(currentPhase === 'playing' && !sim.isFalling, sim.level, hasHazard);
+
       const needsRender =
         currentPhase === 'title' ||
         currentPhase === 'playing' ||
@@ -941,6 +980,7 @@ export default function App() {
 
     return () => {
       cancelAnimationFrame(rafId);
+      gameAudio.updateBgm(false);
       ro.disconnect();
     };
   }, [clearAllInputs, syncBodyState]);

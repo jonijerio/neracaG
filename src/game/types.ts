@@ -40,7 +40,7 @@ export const DIFFICULTY_PRESETS: Record<DifficultyLevel, DifficultyConfig> = {
 
 export type WindPhase = 'calm' | 'telegraph' | 'active';
 
-export type PowerUpType = 'slow_motion' | 'stabilizer';
+export type PowerUpType = 'slow_motion' | 'stabilizer' | 'target_magnet' | 'monster_repel';
 
 export interface PowerUpCollectible {
   type: PowerUpType;
@@ -65,6 +65,16 @@ export const POWERUP_PRESETS: Record<PowerUpType, { id: PowerUpType; label: stri
     id: 'stabilizer',
     label: 'Stabilizer',
     duration: 6.5,
+  },
+  target_magnet: {
+    id: 'target_magnet',
+    label: 'Magnet Target',
+    duration: 6.0,
+  },
+  monster_repel: {
+    id: 'monster_repel',
+    label: 'Gelombang Kejut',
+    duration: 0,
   },
 };
 
@@ -106,7 +116,7 @@ export const MONSTER_PRESETS: Record<MonsterKind, MonsterPreset> = {
     warningText: 'Manusia berat menginjak sisi papan!',
     color: '#fb7185',
     duration: 5.0,
-    weight: 2.35,
+    weight: 1.55,
     hitRadius: 15,
   },
   robot: {
@@ -177,6 +187,7 @@ export interface SimEvent {
   intensity?: number;
   powerUpType?: PowerUpType;
   monsterKind?: MonsterKind;
+  repelledCount?: number;
 }
 
 export interface PhysicsState {
@@ -211,6 +222,7 @@ export interface PhysicsState {
 
   // Target zone on board
   targetX: number;
+  targetVel: number;
   targetHalfWidth: number;
   targetProgress: number; // 0..1
   targetArmingTimer: number; // >0 means telegraphing before active

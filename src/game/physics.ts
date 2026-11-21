@@ -57,6 +57,7 @@ export function createInitialPhysicsState(
     isGameOver: false,
 
     targetX: 0,
+    targetVel: 0,
     targetHalfWidth: 36,
     targetProgress: 0,
     targetArmingTimer: 0,
@@ -109,9 +110,13 @@ export function ballBoardToWorld(boardAngle: number, ballX: number): { x: number
   };
 }
 
+function getTargetMaxReach(level: number): number {
+  return Math.min(C.BOARD_HALF_LEN - 62, 110 + Math.max(0, level - 1) * 18);
+}
+
 function pickNextTargetX(state: PhysicsState): number {
   // Reach expands smoothly as level rises, staying well inside safe edges
-  const maxReach = Math.min(C.BOARD_HALF_LEN - 62, 110 + (state.level - 1) * 18);
+  const maxReach = getTargetMaxReach(state.level);
   const minSeparation = 70;
   let candidate = 0;
   for (let i = 0; i < 6; i++) {
@@ -122,6 +127,15 @@ function pickNextTargetX(state: PhysicsState): number {
     }
   }
   return Math.round(candidate);
+}
+
+function pickNextTargetVelocity(state: PhysicsState): number {
+  if (state.level < 4) return 0;
+  const moveChance = Math.min(0.65, 0.28 + (state.level - 4) * 0.08);
+  if (nextRandom(state) >= moveChance) return 0;
+  const dir = nextRandom(state) < 0.5 ? -1 : 1;
+  const speed = 22 + Math.min(28, (state.level - 4) * 5);
+  return dir * speed;
 }
 
 function pickPowerUpPosition(state: PhysicsState): number {
@@ -150,9 +164,9 @@ export function getTargetPointValue(level: number, combo: number): number {
 }
 
 function pickMonsterPosition(state: PhysicsState, kind: MonsterKind): number {
-  const minAbs = kind === 'human' ? 125 : kind === 'titan' ? 115 : kind === 'robot' ? 170 : 68;
-  const maxAbs = kind === 'robot' ? 215 : kind === 'titan' ? 195 : 205;
-  const minBallDist = kind === 'titan' ? 56 : 34;
+  const minAbs = kind === 'human' ? 105 : kind === 'titan' ? 115 : kind === 'robot' ? 170 : 68;
+  const maxAbs = kind === 'human' ? 175 : kind === 'robot' ? 215 : kind === 'titan' ? 195 : 205;
+  const minBallDist = kind === 'titan' ? 56 : kind === 'human' ? 46 : 34;
   let candidate = 0;
   for (let i = 0; i < 8; i++) {
     const side: -1 | 1 = nextRandom(state) < 0.5 ? -1 : 1;
@@ -259,6 +273,7 @@ export function stepPhysics(
 
     const isSlowMotion = state.activePowerUp?.type === 'slow_motion';
     const isStabilizer = state.activePowerUp?.type === 'stabilizer';
+    const isTargetMagnet = state.activePowerUp?.type === 'target_magnet';
     const isTitleShowcase = targetAngleOverride !== undefined && targetAngleOverride !== null;
 
     // 1. Update Balance-Disturbing Monsters (suppressed during title showcase)
@@ -347,29 +362,37 @@ export function stepPhysics(
           monsterTorque += Math.sin(m.hopPhase) * mPreset.weight * 1.15;
         } else if (m.kind === 'human') {
           m.hopPhase += subDt * 2.6;
-          // Heavy steady downward leverage on chosen wing
-          monsterTorque += normX * mPreset.weight * 2.55 * levelScale;
-          // Skilled counter-tilting upward shakes the heavy human off sooner
-          if (state.boardAngle * Math.sign(m.x) < -0.15) {
-            m.timer -= subDt * 0.85;
+          // Meaningful weight leverage capped well below player's counter-tilt authority on every difficulty
+          const rawHumanTorque = normX * mPreset.weight * 1.82 * levelScale;
+          const maxHumanTorque = preset.boardAccel * 0.62;
+          monsterTorque += clamp(rawHumanTorque, -maxHumanTorque, maxHumanTorque);
+          // Counter-tilting or holding opposite tilt input shakes Manusia Berat off noticeably faster
+          const sideSign = Math.sign(m.x) || m.dir;
+          const isCounterTilted = state.boardAngle * sideSign < -0.04;
+          const isHoldingCounterInput = clampedInput * sideSign < -0.25;
+          if (isCounterTilted || isHoldingCounterInput) {
+            m.timer -= subDt * (isCounterTilted ? 1.35 : 0.85);
           }
-          // Heavy body check collision if ball slams into Manusia Berat
+          // Body-check collision: firm rebound inward, gentler deflection near outer cliff so ball isn't unfairly blasted off
           const hitDist = C.BALL_RADIUS + (mPreset.hitRadius ?? 15);
           if (m.hitCooldown <= 0 && Math.abs(state.ballX - m.x) <= hitDist) {
             const pushDir: -1 | 1 = state.ballX >= m.x ? 1 : -1;
+            const pushingTowardCliff = pushDir === sideSign && Math.abs(m.x) > 105;
             state.ballX = clamp(
               m.x + pushDir * (hitDist + 1),
               -C.BOARD_HALF_LEN + 18,
               C.BOARD_HALF_LEN - 18
             );
-            state.ballVel = pushDir * Math.max(155, Math.abs(state.ballVel) * 0.65 + 110);
+            state.ballVel = pushingTowardCliff
+              ? pushDir * Math.min(88, Math.abs(state.ballVel) * 0.35 + 42)
+              : pushDir * Math.max(155, Math.abs(state.ballVel) * 0.65 + 110);
             m.hitCooldown = 0.85;
             events.push({
               type: 'monster_hit',
               monsterKind: 'human',
               x: m.x,
               dir: pushDir,
-              intensity: 0.85,
+              intensity: pushingTowardCliff ? 0.62 : 0.85,
             });
           }
         } else if (m.kind === 'robot') {
@@ -540,12 +563,17 @@ export function stepPhysics(
       }
     }
 
-    // 3. Ball Rolling Physics along the tilted board (friction scaled by difficulty + Slow Motion + Slime)
+    // 3. Ball Rolling Physics along the tilted board (friction scaled by difficulty + Slow Motion + Slime + Magnet Target)
     const gravityScale = isSlowMotion ? 0.58 : 1.0;
     const effectiveFriction =
-      (isSlowMotion ? preset.ballFriction * 2.0 : preset.ballFriction) + monsterExtraFriction;
+      (isSlowMotion ? preset.ballFriction * 2.0 : preset.ballFriction) +
+      (isTargetMagnet ? 0.85 : 0) +
+      monsterExtraFriction;
+    const magnetAccel = isTargetMagnet
+      ? clamp((state.targetX - state.ballX) * 2.2, -145, 145)
+      : 0;
     const slopeAccel = C.GRAVITY * gravityScale * Math.sin(state.boardAngle);
-    const totalAccel = slopeAccel + (state.windStrength + monsterBallAccel) * gravityScale;
+    const totalAccel = slopeAccel + (state.windStrength + monsterBallAccel) * gravityScale + magnetAccel;
     state.ballVel += totalAccel * subDt;
     state.ballVel *= Math.exp(-effectiveFriction * subDt);
     state.ballX += state.ballVel * subDt;
@@ -557,20 +585,34 @@ export function stepPhysics(
       if (Math.abs(state.ballX - state.powerUp.x) <= C.BALL_RADIUS + 14) {
         const pType = state.powerUp.type;
         const pPreset = POWERUP_PRESETS[pType];
-        state.activePowerUp = {
-          type: pType,
-          remaining: pPreset.duration,
-          duration: pPreset.duration,
-        };
-        if (pType === 'slow_motion') {
-          state.ballVel *= 0.45;
+        let bonusPoints = 50;
+        let repelledCount = 0;
+
+        if (pType === 'monster_repel') {
+          repelledCount = state.monsters.length;
+          state.monsters = [];
+          state.windPhase = 'calm';
+          state.windStrength = 0;
+          state.windTimer = Math.max(state.windTimer, 3.2);
+          bonusPoints += repelledCount * 25;
+        } else {
+          state.activePowerUp = {
+            type: pType,
+            remaining: pPreset.duration,
+            duration: pPreset.duration,
+          };
+          if (pType === 'slow_motion') {
+            state.ballVel *= 0.45;
+          }
         }
-        state.score += 50;
+
+        state.score += bonusPoints;
         events.push({
           type: 'powerup_collected',
           powerUpType: pType,
           x: state.powerUp.x,
-          points: 50,
+          points: bonusPoints,
+          repelledCount,
         });
         state.powerUp = null;
         state.powerUpSpawnTimer = 6.5 + nextRandom(state) * 3.5;
@@ -581,7 +623,17 @@ export function stepPhysics(
     } else {
       state.powerUpSpawnTimer -= subDt;
       if (state.powerUpSpawnTimer <= 0) {
-        const nextType: PowerUpType = nextRandom(state) < 0.5 ? 'slow_motion' : 'stabilizer';
+        const roll = nextRandom(state);
+        const nextType: PowerUpType =
+          state.monsters.length > 0 && roll < 0.34
+            ? 'monster_repel'
+            : roll < 0.34
+              ? 'slow_motion'
+              : roll < 0.67
+                ? 'stabilizer'
+                : roll < 0.9
+                  ? 'target_magnet'
+                  : 'monster_repel';
         const px = pickPowerUpPosition(state);
         state.powerUp = {
           type: nextType,
@@ -667,11 +719,23 @@ export function stepPhysics(
       }
     }
 
-    // 5. Target Zone & Scoring
+    // 5. Target Zone & Scoring (including gentle moving target glide at Level 4+)
     if (state.targetArmingTimer > 0) {
       state.targetArmingTimer = Math.max(0, state.targetArmingTimer - subDt);
       state.inTargetZone = false;
     } else {
+      if (state.targetVel !== 0) {
+        const maxReach = getTargetMaxReach(state.level);
+        state.targetX += state.targetVel * subDt;
+        if (state.targetX > maxReach) {
+          state.targetX = maxReach;
+          state.targetVel = -Math.abs(state.targetVel);
+        } else if (state.targetX < -maxReach) {
+          state.targetX = -maxReach;
+          state.targetVel = Math.abs(state.targetVel);
+        }
+      }
+
       const distToTarget = Math.abs(state.ballX - state.targetX);
       const wasIn = state.inTargetZone;
       state.inTargetZone = distToTarget <= state.targetHalfWidth;
@@ -702,6 +766,7 @@ export function stepPhysics(
           state.targetProgress = 0;
           state.targetHalfWidth = Math.max(22, 36 - Math.floor(state.level / 2) * 2);
           state.targetX = pickNextTargetX(state);
+          state.targetVel = pickNextTargetVelocity(state);
           state.targetArmingTimer = getTargetArmTime(state.level);
           state.inTargetZone = false;
         }

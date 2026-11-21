@@ -21,7 +21,12 @@ import {
 import { computeAtmosphere, levelToAtmosphereProgress } from './atmosphere';
 import { computeGyroTiltInput, isWideTitleLayout } from './input';
 import { getComboIndicatorStyle, shouldPulseCombo } from './hudCombo';
-import { BalanceRenderer } from './renderer';
+import {
+  BalanceRenderer,
+  FIRE_TRAIL_SPEED_MAX,
+  FIRE_TRAIL_SPEED_MIN,
+  computeFireTrailIntensity,
+} from './renderer';
 import {
   STARTER_COINS,
   awardCoins,
@@ -794,21 +799,28 @@ test('BalanceRenderer temporary screen blur and shockwave distortion activates, 
 test('GameHud floating Combo xN helper toggles visibility, scales tiers, and pulses only on combo increase', () => {
   const hidden = getComboIndicatorStyle(1);
   assert.equal(hidden.visible, false);
+  assert.equal(hidden.auraOpacity, 0);
 
   const c2 = getComboIndicatorStyle(2);
   assert.equal(c2.visible, true);
   assert.equal(c2.label, 'Combo x2');
   assert.equal(c2.tier, 'base');
+  assert.equal(c2.auraOpacity, 0);
+
+  const c3 = getComboIndicatorStyle(3);
+  assert.equal(c3.auraOpacity > 0, true);
 
   const c4 = getComboIndicatorStyle(4);
   assert.equal(c4.visible, true);
   assert.equal(c4.label, 'Combo x4');
   assert.equal(c4.tier, 'hot');
+  assert.equal(c4.auraOpacity > c3.auraOpacity, true);
 
   const c7 = getComboIndicatorStyle(7);
   assert.equal(c7.visible, true);
   assert.equal(c7.label, 'Combo x7');
   assert.equal(c7.tier, 'blaze');
+  assert.equal(c7.auraOpacity > c4.auraOpacity, true);
 
   assert.equal(shouldPulseCombo(1, 2), true);
   assert.equal(shouldPulseCombo(2, 3), true);
@@ -817,3 +829,133 @@ test('GameHud floating Combo xN helper toggles visibility, scales tiers, and pul
   assert.equal(shouldPulseCombo(0, 1), false);
 });
 
+test('target_magnet pulls ball toward target zone and monster_repel clears active monsters & wind gusts', () => {
+  // 1. Magnet Target pulls ball toward targetX without player input
+  const magnetState = createInitialPhysicsState(12345);
+  magnetState.windTimer = 99;
+  magnetState.monsterSpawnTimer = 99;
+  magnetState.targetX = 95;
+  magnetState.ballX = 10;
+  magnetState.powerUp = { type: 'target_magnet', x: 10, life: 5, maxLife: 5 };
+  for (let i = 0; i < 40; i++) {
+    stepPhysics(magnetState, 1 / 60, 0);
+  }
+  assert.equal(magnetState.activePowerUp?.type, 'target_magnet');
+  assert.equal(magnetState.ballX > 25, true);
+
+  // 2. Monster Repel clears monsters (including Titan), calms wind, and emits repelledCount
+  const repelState = createInitialPhysicsState(12345);
+  repelState.windPhase = 'active';
+  repelState.windStrength = 90;
+  spawnMonster(repelState, 'titan', 120);
+  spawnMonster(repelState, 'robot', -140);
+  assert.equal(repelState.monsters.length, 2);
+
+  repelState.ballX = 0;
+  repelState.powerUp = { type: 'monster_repel', x: 0, life: 5, maxLife: 5 };
+  const events = stepPhysics(repelState, 1 / 60, 0);
+  const collected = events.find((e) => e.type === 'powerup_collected' && e.powerUpType === 'monster_repel');
+  assert.ok(collected, 'expected monster_repel powerup_collected event');
+  assert.equal(collected?.repelledCount, 2);
+  assert.equal(collected?.points, 100);
+  assert.equal(repelState.monsters.length, 0);
+  assert.equal(repelState.windPhase, 'calm');
+  assert.equal(repelState.windStrength, 0);
+  assert.equal(repelState.activePowerUp, null);
+});
+
+test('moving target zone glides smoothly and bounces cleanly within board bounds', () => {
+  const state = createInitialPhysicsState(12345);
+  state.level = 5;
+  state.windTimer = 99;
+  state.monsterSpawnTimer = 99;
+  state.targetArmingTimer = 0;
+  state.targetX = 140;
+  state.targetVel = 60;
+
+  for (let i = 0; i < 120; i++) {
+    stepPhysics(state, 1 / 60, 0);
+  }
+  assert.equal(Math.abs(state.targetX) <= PHYSICS_CONSTANTS.BOARD_HALF_LEN - 62, true);
+  assert.equal(state.targetVel < 0, true);
+});
+
+test('Manusia Berat (human) monster can be countered on Easy and Normal and shakes off faster with counter-tilt', () => {
+  for (const difficulty of ['easy', 'normal'] as const) {
+    const state = createInitialPhysicsState(12345, difficulty);
+    state.windTimer = 99;
+    state.monsterSpawnTimer = 99;
+    state.level = 5;
+    const human = spawnMonster(state, 'human', 175);
+    human.phase = 'active';
+    human.timer = human.maxTimer;
+
+    let leftEarly = false;
+    let framesUntilLeave = 0;
+    for (let i = 0; i < 60 * 4; i++) {
+      // Player actively counter-tilts against human on right wing (+175) while keeping ball centered
+      const input = state.ballX < -40 ? 0.35 : -1;
+      const events = stepPhysics(state, 1 / 60, input);
+      framesUntilLeave += 1;
+      if (events.some((e) => e.type === 'monster_leave' && e.monsterKind === 'human')) {
+        leftEarly = true;
+        break;
+      }
+    }
+
+    assert.equal(state.isFalling, false, `ball should survive Manusia Berat on ${difficulty}`);
+    assert.equal(state.isGameOver, false, `player should not auto-lose on ${difficulty}`);
+    assert.equal(leftEarly, true, `counter-tilting should shake Manusia Berat off on ${difficulty}`);
+    // Full duration is 5.0s (300 frames); active counter-tilting should dismiss it well before 3.5s (210 frames)
+    assert.equal(framesUntilLeave < 210, true, `expected faster shake-off on ${difficulty}, took ${framesUntilLeave} frames`);
+  }
+});
+
+test('BalanceRenderer dynamic fire-trail activates at high ball velocities, fades over time, and resets cleanly', () => {
+  assert.equal(computeFireTrailIntensity(0), 0);
+  assert.equal(computeFireTrailIntensity(FIRE_TRAIL_SPEED_MIN - 10), 0);
+  const midIntensity = computeFireTrailIntensity((FIRE_TRAIL_SPEED_MIN + FIRE_TRAIL_SPEED_MAX) / 2);
+  assert.equal(Math.abs(midIntensity - 0.5) < 0.02, true);
+  assert.equal(computeFireTrailIntensity(FIRE_TRAIL_SPEED_MAX + 50), 1);
+
+  const renderer = new BalanceRenderer('classic');
+  assert.equal(renderer.getActiveFireTrailCount(), 0);
+  assert.equal(renderer.getFireTrailIntensity(), 0);
+
+  // Low speed does not ignite fire-trail particles
+  for (let i = 0; i < 15; i++) {
+    renderer.emitFireTrailForBall(i * 1.2, -28, 72, 0, 1 / 60);
+    renderer.tickVisuals(1 / 60);
+  }
+  assert.equal(renderer.getActiveFireTrailCount(), 0);
+  assert.equal(renderer.getFireTrailIntensity(), 0);
+
+  // High velocity ignites fading fire streak particles and trail nodes
+  for (let i = 0; i < 20; i++) {
+    const wx = i * 4.5;
+    renderer.recordTrailPoint(wx, -28, 275);
+    renderer.emitFireTrailForBall(wx, -28, 275, -18, 1 / 60);
+    renderer.tickVisuals(1 / 60);
+  }
+  assert.equal(renderer.getFireTrailIntensity() > 0.75, true);
+  assert.equal(renderer.getActiveFireTrailCount() > 8, true);
+  assert.equal(renderer.getActiveTrailCount() > 2, true);
+  assert.equal(renderer.hasActiveEffects(), true);
+
+  // Stopping emission lets particles fade out cleanly over ~0.8s
+  renderer.emitFireTrailForBall(90, -28, 0, 0, 1 / 60);
+  for (let i = 0; i < 55; i++) {
+    renderer.tickVisuals(1 / 60);
+  }
+  assert.equal(renderer.getActiveFireTrailCount(), 0);
+  assert.equal(renderer.getActiveTrailCount(), 0);
+
+  // Immediate resetEffects clears active fire particles & intensity
+  for (let i = 0; i < 10; i++) {
+    renderer.emitFireTrailForBall(i * 4, -28, 290, 0, 1 / 60);
+  }
+  assert.equal(renderer.getActiveFireTrailCount() > 0, true);
+  renderer.resetEffects();
+  assert.equal(renderer.getActiveFireTrailCount(), 0);
+  assert.equal(renderer.getFireTrailIntensity(), 0);
+});

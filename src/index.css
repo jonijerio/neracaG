@@ -205,12 +205,72 @@
 
 @keyframes neracaRingPulse {
   0% {
-    opacity: 0.8;
+    opacity: 0.85;
     transform: scale(0.65);
   }
   100% {
     opacity: 0;
-    transform: scale(1.75);
+    transform: scale(1.95);
+  }
+}
+
+@keyframes neracaEmblemFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+@keyframes neracaCtaGlow {
+  0%,
+  100% {
+    box-shadow: 0 6px 20px rgba(232, 155, 45, 0.34), 0 0 0 0 rgba(253, 224, 71, 0.35);
+  }
+  50% {
+    box-shadow: 0 8px 28px rgba(232, 155, 45, 0.52), 0 0 0 6px rgba(253, 224, 71, 0);
+  }
+}
+
+@keyframes neracaComboFire {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.55));
+  }
+  50% {
+    filter: drop-shadow(0 0 14px rgba(251, 146, 60, 0.92));
+  }
+}
+
+@keyframes neracaLevelBannerZoom {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0) scale(0.82);
+  }
+  20% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes neracaConfettiFall {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -12px, 0) rotate(0deg) scale(0.6);
+  }
+  20% {
+    opacity: 1;
+    transform: translate3d(var(--cf-x, 0px), 10px, 0) rotate(90deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(calc(var(--cf-x, 0px) * 1.5), 48px, 0) rotate(260deg) scale(0.7);
   }
 }
 
@@ -263,7 +323,27 @@
 }
 
 .neraca-ring-pulse {
-  animation: neracaRingPulse 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: neracaRingPulse 640ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.neraca-emblem-float {
+  animation: neracaEmblemFloat 3.4s ease-in-out infinite;
+}
+
+.neraca-cta-glow {
+  animation: neracaCtaGlow 2.4s ease-in-out infinite;
+}
+
+.neraca-combo-fire {
+  animation: neracaComboFire 900ms ease-in-out infinite;
+}
+
+.neraca-level-zoom {
+  animation: neracaLevelBannerZoom 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.neraca-confetti-chip {
+  animation: neracaConfettiFall 1.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .neraca-btn-tactile {
@@ -295,7 +375,12 @@
   .neraca-alert-in,
   .neraca-danger-pulse,
   .neraca-spark-ray,
-  .neraca-ring-pulse {
+  .neraca-ring-pulse,
+  .neraca-emblem-float,
+  .neraca-cta-glow,
+  .neraca-combo-fire,
+  .neraca-level-zoom,
+  .neraca-confetti-chip {
     animation: none !important;
   }
 

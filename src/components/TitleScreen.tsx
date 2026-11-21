@@ -141,6 +141,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [anyDrawerOpen]);
 
+  const [skinFxKey, setSkinFxKey] = useState(0);
+
   const activeSkin = SKIN_PRESETS[selectedSkin] ?? SKIN_PRESETS.classic;
   const unlockedList = shopState.unlockedSkins.length > 0 ? shopState.unlockedSkins : (['classic'] as SkinId[]);
   const currentUnlockedIdx = Math.max(0, unlockedList.indexOf(activeSkin.id));
@@ -148,6 +150,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   const cycleUnlockedSkin = (delta: number) => {
     const nextIdx = (currentUnlockedIdx + delta + unlockedList.length) % unlockedList.length;
     onSelectSkin(unlockedList[nextIdx]);
+    setSkinFxKey((k) => k + 1);
   };
 
   return (
@@ -160,7 +163,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       >
         <svg
           viewBox="0 0 360 112"
-          className="neraca-enter-up h-auto w-44 sm:w-64 [@media(max-height:520px)]:w-36 md:w-80"
+          className="neraca-enter-up neraca-emblem-float h-auto w-44 sm:w-64 [@media(max-height:520px)]:w-36 md:w-80"
+          style={{ filter: `drop-shadow(0 8px 24px ${activeSkin.board.accentColor}33)` }}
           role="img"
           aria-label="Neraca"
         >
@@ -314,8 +318,17 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             }}
             className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[#252f3c] sm:gap-2.5 sm:px-2"
           >
-            <SkinMiniSwatch skinId={activeSkin.id} />
-            <div className="min-w-0 flex-1">
+            <span className="relative inline-flex items-center">
+              <SkinMiniSwatch skinId={activeSkin.id} />
+              {skinFxKey > 0 && (
+                <SparkBurst
+                  burstKey={skinFxKey}
+                  color={activeSkin.board.accentColor}
+                  className="pointer-events-none absolute inset-0"
+                />
+              )}
+            </span>
+            <div key={activeSkin.id} className="neraca-pop min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
                 <span className="truncate text-sm font-semibold text-[#f4f1ea]">
                   {activeSkin.name}
@@ -372,7 +385,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               e.currentTarget.blur();
               onStart();
             }}
-            className="neraca-btn-tactile relative min-h-11 cursor-pointer overflow-hidden whitespace-nowrap rounded-lg bg-[#e89b2d] px-5 py-2.5 text-sm font-bold text-[#14181e] shadow-lg hover:bg-[#f0aa42] hover:shadow-[0_6px_22px_rgba(232,155,45,0.38)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f5c469] sm:px-6 sm:py-3.5 sm:text-base"
+            className="neraca-btn-tactile neraca-cta-glow relative min-h-11 cursor-pointer overflow-hidden whitespace-nowrap rounded-lg bg-[#e89b2d] px-5 py-2.5 text-sm font-bold text-[#14181e] shadow-lg hover:bg-[#f0aa42] hover:shadow-[0_6px_26px_rgba(232,155,45,0.52)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f5c469] sm:px-6 sm:py-3.5 sm:text-base"
           >
             <SheenSweep />
             <span className="relative z-10">Mulai Main</span>
@@ -456,6 +469,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   burstKey={purchaseFx.key}
                   label={purchaseFx.label}
                   color={purchaseFx.color}
+                  intense
                   className="ml-2"
                 />
               </div>
