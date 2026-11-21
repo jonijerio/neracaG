@@ -12,6 +12,7 @@ import {
   saveDailyMissionState,
   toggleSpecialReward,
 } from './game/missions';
+import { computeGyroTiltInput } from './game/input';
 import { ballBoardToWorld, createInitialPhysicsState, stepPhysics } from './game/physics';
 import { BalanceRenderer } from './game/renderer';
 import {
@@ -105,6 +106,10 @@ export default function App() {
     readDailyMissionState()
   );
   const [muted, setMuted] = useState<boolean>(false);
+  const [gyroSupported] = useState<boolean>(
+    () => typeof window !== 'undefined' && 'DeviceOrientationEvent' in window
+  );
+  const [gyroEnabled, setGyroEnabled] = useState<boolean>(false);
   const [bestScore, setBestScore] = useState<number>(() => readBestScore());
   const [endRun, setEndRun] = useState<EndRunSnapshot | null>(null);
   const [hud, setHud] = useState<HudSnapshot>({
@@ -159,6 +164,9 @@ export default function App() {
   const canvasDragTiltRef = useRef<number>(0);
   const isCanvasDraggingRef = useRef<boolean>(false);
   const dragOriginXRef = useRef<number>(0);
+  const gyroEnabledRef = useRef<boolean>(false);
+  const gyroTiltRef = useRef<number>(0);
+  const gyroNeutralRef = useRef<number | null>(null);
   const titleHoverTiltRef = useRef<number>(0);
   const titleIdleTimeRef = useRef<number>(0);
 
@@ -167,6 +175,7 @@ export default function App() {
     buttonTiltRef.current = 0;
     canvasDragTiltRef.current = 0;
     isCanvasDraggingRef.current = false;
+    gyroTiltRef.current = 0;
   }, []);
 
   const syncBodyState = useCallback((nextPhase: GamePhase) => {
@@ -326,6 +335,67 @@ export default function App() {
       return next;
     });
   }, []);
+
+  const toggleGyro = useCallback(async () => {
+    if (!gyroSupported) return;
+    if (gyroEnabledRef.current) {
+      gyroEnabledRef.current = false;
+      gyroTiltRef.current = 0;
+      gyroNeutralRef.current = null;
+      setGyroEnabled(false);
+      return;
+    }
+
+    const DevOrient = window.DeviceOrientationEvent as unknown as {
+      requestPermission?: () => Promise<'granted' | 'denied'>;
+    };
+    if (typeof DevOrient?.requestPermission === 'function') {
+      try {
+        const res = await DevOrient.requestPermission();
+        if (res === 'denied') return;
+      } catch {
+        // Ignore non-iOS permission errors and attempt attaching listener cleanly
+      }
+    }
+
+    gyroNeutralRef.current = null;
+    gyroTiltRef.current = 0;
+    gyroEnabledRef.current = true;
+    setGyroEnabled(true);
+  }, [gyroSupported]);
+
+  // Listen to device orientation when sensor tilt mode is enabled
+  useEffect(() => {
+    if (!gyroEnabled) return;
+    const onDeviceOrientation = (e: DeviceOrientationEvent) => {
+      if (phaseRef.current !== 'playing') return;
+      const isLandscape = window.innerWidth > window.innerHeight;
+      const orientAngle =
+        typeof window.screen?.orientation?.angle === 'number'
+          ? window.screen.orientation.angle
+          : ((window as unknown as { orientation?: number }).orientation ?? 0);
+      const rawDeg =
+        isLandscape || Math.abs(orientAngle) === 90 || Math.abs(orientAngle) === 270
+          ? (e.beta ?? 0) * (orientAngle === 270 || orientAngle === -90 ? -1 : 1)
+          : (e.gamma ?? 0) * (orientAngle === 180 ? -1 : 1);
+
+      if (gyroNeutralRef.current === null && Number.isFinite(rawDeg)) {
+        // Clamp calibration offset within natural holding comfort range
+        gyroNeutralRef.current = Math.max(-25, Math.min(25, rawDeg));
+      }
+
+      gyroTiltRef.current = computeGyroTiltInput(
+        { gamma: e.gamma, beta: e.beta, orientationAngle: orientAngle },
+        isLandscape,
+        gyroNeutralRef.current ?? 0
+      );
+    };
+
+    window.addEventListener('deviceorientation', onDeviceOrientation);
+    return () => {
+      window.removeEventListener('deviceorientation', onDeviceOrientation);
+    };
+  }, [gyroEnabled]);
 
   // Keep body data-state synced on mount
   useEffect(() => {
@@ -499,6 +569,9 @@ export default function App() {
         if (tiltInput === 0 && isCanvasDraggingRef.current) {
           tiltInput = canvasDragTiltRef.current;
         }
+        if (tiltInput === 0 && gyroEnabledRef.current && Math.abs(gyroTiltRef.current) > 0.01) {
+          tiltInput = gyroTiltRef.current;
+        }
 
         const events = stepPhysics(sim, dt, tiltInput);
 
@@ -578,16 +651,57 @@ export default function App() {
             const mKind = ev.monsterKind ?? 'monkey';
             const mColor = MONSTER_PRESETS[mKind].color;
             gameAudio.playMonsterImpact(mKind);
-            renderer.triggerImpactShake((ev.intensity ?? 0.44) * 0.62, 0, 0.45);
             const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? 0);
-            renderer.spawnBurst(worldPos.x, worldPos.y, 12, mColor);
-            renderer.spawnShockwave(worldPos.x, worldPos.y, mColor, 58);
+            if (mKind === 'titan') {
+              renderer.triggerImpactShake(0.85, 0, 0.65);
+              renderer.spawnBurst(worldPos.x, worldPos.y, 18, mColor);
+              renderer.spawnShockwave(worldPos.x, worldPos.y, mColor, 86);
+              renderer.spawnCallout(worldPos.x, worldPos.y - 16, 'TITAN DATANG!', mColor);
+            } else {
+              renderer.triggerImpactShake((ev.intensity ?? 0.44) * 0.62, 0, 0.45);
+              renderer.spawnBurst(worldPos.x, worldPos.y, 12, mColor);
+              renderer.spawnShockwave(worldPos.x, worldPos.y, mColor, 58);
+            }
           } else if (ev.type === 'monster_hit') {
-            gameAudio.playMonsterImpact(ev.monsterKind ?? 'robot');
-            renderer.triggerImpactShake(ev.intensity ?? 0.62, ev.dir ?? 0, 0.25);
+            const mKind = ev.monsterKind ?? 'robot';
+            const intensity = ev.intensity ?? 0.65;
+            const mPreset = MONSTER_PRESETS[mKind];
+            const isHeavyImpact = intensity >= 0.7 || mKind === 'titan' || mKind === 'human';
+
+            gameAudio.playMonsterImpact(mKind);
+            if (isHeavyImpact) {
+              gameAudio.playHeavyCollisionDistortion(intensity);
+            }
+
+            const shakePower = mKind === 'titan' ? 1.1 : mKind === 'human' ? 0.92 : intensity;
+            renderer.triggerImpactShake(shakePower, ev.dir ?? 0, mKind === 'titan' ? 0.42 : 0.25);
             const worldPos = ballBoardToWorld(sim.boardAngle, ev.x ?? sim.ballX);
-            renderer.spawnBurst(worldPos.x, worldPos.y, 14, '#facc15');
-            renderer.spawnShockwave(worldPos.x, worldPos.y, '#a78bfa', 64);
+            renderer.spawnBurst(
+              worldPos.x,
+              worldPos.y,
+              mKind === 'titan' ? 28 : mKind === 'human' ? 20 : 14,
+              mKind === 'titan' ? '#fb923c' : '#facc15'
+            );
+            renderer.spawnShockwave(
+              worldPos.x,
+              worldPos.y,
+              mPreset.color,
+              mKind === 'titan' ? 112 : mKind === 'human' ? 88 : 64
+            );
+            if (isHeavyImpact) {
+              renderer.triggerScreenDistortion(
+                intensity,
+                worldPos.x,
+                worldPos.y,
+                mPreset.color,
+                mKind === 'titan' ? 1.1 : 0.95
+              );
+            }
+            if (mKind === 'titan') {
+              renderer.spawnCallout(worldPos.x, worldPos.y - 18, 'BENTURAN TITAN!', '#fb923c');
+            } else if (mKind === 'human') {
+              renderer.spawnCallout(worldPos.x, worldPos.y - 14, 'TUBRUKAN BERAT!', '#facc15');
+            }
           } else if (ev.type === 'monster_leave') {
             const bonusCoins = scaleBonusCoins(5, shopStateRef.current.upgrades.coin_multiplier);
             runCoinsEarnedRef.current += bonusCoins;
@@ -879,7 +993,7 @@ export default function App() {
           onPointerMove={handleCanvasPointerMove}
           onPointerUp={handleCanvasPointerUp}
           onPointerCancel={handleCanvasPointerUp}
-          className="block h-full w-full cursor-grab outline-none active:cursor-grabbing"
+          className="block h-full w-full touch-none select-none cursor-grab outline-none active:cursor-grabbing"
         />
       </div>
 
@@ -906,7 +1020,10 @@ export default function App() {
         <GameHud
           hud={hud}
           muted={muted}
+          gyroSupported={gyroSupported}
+          gyroEnabled={gyroEnabled}
           onToggleMute={toggleMute}
+          onToggleGyro={toggleGyro}
           onPause={pauseGame}
           onRestart={startNewRun}
           onTiltPointer={(dir) => {

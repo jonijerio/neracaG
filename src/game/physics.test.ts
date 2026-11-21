@@ -19,6 +19,8 @@ import {
   toggleSpecialReward,
 } from './missions';
 import { computeAtmosphere, levelToAtmosphereProgress } from './atmosphere';
+import { computeGyroTiltInput, isWideTitleLayout } from './input';
+import { getComboIndicatorStyle, shouldPulseCombo } from './hudCombo';
 import { BalanceRenderer } from './renderer';
 import {
   STARTER_COINS,
@@ -379,8 +381,8 @@ test('daily mission system picks 3 challenges deterministically, awards bonus po
   assert.equal(rolledOver.unlockedRewards.includes('aura_juara'), true);
 });
 
-test('5 balance-disturbing monsters spawn after grace period and disturb board & ball physics distinctly', () => {
-  assert.equal(MONSTER_KINDS.length, 5);
+test('6 balance-disturbing monsters spawn after grace period and disturb board & ball physics distinctly', () => {
+  assert.equal(MONSTER_KINDS.length, 6);
   for (const k of MONSTER_KINDS) {
     assert.equal(MONSTER_PRESETS[k].name.length > 0, true);
   }
@@ -624,5 +626,194 @@ test('BalanceRenderer spawns a full-screen confetti explosion with thousands of 
   assert.equal(renderer.getActiveParticleCount(), 2000);
   renderer.resetEffects();
   assert.equal(renderer.getActiveParticleCount(), 0);
+});
+
+test('BalanceRenderer initiates smooth dual-layer background cross-fade between levels and settles cleanly', () => {
+  const renderer = new BalanceRenderer('classic');
+  assert.equal(renderer.isAtmosphereTransitioning(), false);
+  assert.equal(renderer.getAtmosphereCrossFade(), 1);
+  assert.equal(renderer.getAtmosphereState().stage, 'sunrise');
+
+  // Jumping from level 1 (sunrise) to level 8 (storm) initiates a smooth cross-fade
+  renderer.setAtmosphereLevel(8);
+  assert.equal(renderer.isAtmosphereTransitioning(), true);
+  assert.equal(renderer.getAtmosphereCrossFade(), 0);
+  assert.equal(renderer.hasActiveEffects(), true);
+
+  // Calling setAtmosphereLevel again with the same level does not restart the fade
+  renderer.tickVisuals(0.5);
+  const midFade = renderer.getAtmosphereCrossFade();
+  assert.equal(midFade > 0.25 && midFade < 0.45, true);
+  renderer.setAtmosphereLevel(8);
+  assert.equal(renderer.getAtmosphereCrossFade(), midFade);
+
+  // Mid-transition atmosphere has smoothly progressed toward storm without popping straight to 1
+  const midAtmo = renderer.getAtmosphereState();
+  assert.equal(midAtmo.rainIntensity > 0.05 && midAtmo.rainIntensity < 0.85, true);
+
+  // After total cross-fade duration (~1.65s), transition completes cleanly at storm
+  for (let i = 0; i < 90; i++) {
+    renderer.tickVisuals(1 / 60);
+  }
+  assert.equal(renderer.isAtmosphereTransitioning(), false);
+  assert.equal(renderer.getAtmosphereCrossFade(), 1);
+  assert.equal(renderer.getAtmosphereState().stage, 'storm');
+  assert.equal(renderer.getAtmosphereState().rainIntensity, 1);
+
+  // Resetting effects snaps cleanly back to sunrise with no active cross-fade
+  renderer.resetEffects();
+  assert.equal(renderer.isAtmosphereTransitioning(), false);
+  assert.equal(renderer.getAtmosphereCrossFade(), 1);
+  assert.equal(renderer.getAtmosphereState().stage, 'sunrise');
+});
+
+test('cross-device gyro normalization and wide layout helpers behave accurately across viewports and orientations', () => {
+  // Deadzone suppresses micro hand jitter in both portrait and landscape
+  assert.equal(computeGyroTiltInput({ gamma: 2.5, beta: 0, orientationAngle: 0 }, false), 0);
+  assert.equal(computeGyroTiltInput({ gamma: 0, beta: -3.0, orientationAngle: 90 }, true), 0);
+
+  // Portrait right/left tilt maps smoothly to -1..1 and clamps at max angle
+  const rightTilt = computeGyroTiltInput({ gamma: 15.75, beta: 0, orientationAngle: 0 }, false);
+  assert.equal(Math.abs(rightTilt - 0.5) < 0.01, true);
+  assert.equal(computeGyroTiltInput({ gamma: -45, beta: 0, orientationAngle: 0 }, false), -1);
+
+  // Landscape orientation (90° vs 270° inverted) maps beta reliably
+  const land90 = computeGyroTiltInput({ gamma: 0, beta: 28, orientationAngle: 90 }, true);
+  const land270 = computeGyroTiltInput({ gamma: 0, beta: 28, orientationAngle: 270 }, true);
+  assert.equal(land90, 1);
+  assert.equal(land270, -1);
+
+  // Neutral calibration offset centers tilted comfortable phone grip
+  assert.equal(
+    computeGyroTiltInput({ gamma: 12, beta: 0, orientationAngle: 0 }, false, 12),
+    0
+  );
+
+  // Wide layout triggers on desktops, large tablets, and landscape phones, not portrait phones
+  assert.equal(isWideTitleLayout(1280, 720), true);
+  assert.equal(isWideTitleLayout(844, 390), true);
+  assert.equal(isWideTitleLayout(390, 844), false);
+  assert.equal(isWideTitleLayout(375, 667), false);
+  assert.equal(isWideTitleLayout(768, 1024), false);
+  assert.equal(isWideTitleLayout(1024, 768), true);
+});
+
+test('Titan Batu giant monster and heavy human collision trigger high-intensity monster_hit events and rebound ball', () => {
+  assert.equal(MONSTER_KINDS.includes('titan'), true);
+  assert.equal(MONSTER_PRESETS.titan.isGiant, true);
+  assert.equal(MONSTER_PRESETS.titan.weight >= 3, true);
+
+  // 1. Giant Titan rebounds colliding ball with intensity 1.0
+  const titanState = createInitialPhysicsState(12345);
+  titanState.windTimer = 99;
+  const titan = spawnMonster(titanState, 'titan', 40);
+  titan.phase = 'active';
+  titan.timer = titan.maxTimer;
+  titanState.ballX = 8;
+  titanState.ballVel = 220;
+
+  let titanHit: { intensity?: number; monsterKind?: string } | undefined;
+  for (let i = 0; i < 30; i++) {
+    const events = stepPhysics(titanState, 1 / 60, 0);
+    const found = events.find((e) => e.type === 'monster_hit' && e.monsterKind === 'titan');
+    if (found) {
+      titanHit = found;
+      break;
+    }
+  }
+  assert.ok(titanHit, 'expected titan monster_hit event');
+  assert.equal(titanHit?.intensity, 1.0);
+  assert.equal(titanState.ballVel < -120, true);
+
+  // 1b. Giant Titan standing on a wing exerts heavy downward stomp torque
+  const titanTiltState = createInitialPhysicsState(12345);
+  titanTiltState.windTimer = 99;
+  const titanWing = spawnMonster(titanTiltState, 'titan', 165);
+  titanWing.phase = 'active';
+  titanWing.timer = titanWing.maxTimer;
+  for (let i = 0; i < 35; i++) {
+    stepPhysics(titanTiltState, 1 / 60, 0);
+  }
+  assert.equal(titanTiltState.boardAngle > 0.08, true);
+
+  // 2. Heavy Human monster collision rebounds ball and emits intensity 0.85
+  const humanState = createInitialPhysicsState(12345);
+  humanState.windTimer = 99;
+  const human = spawnMonster(humanState, 'human', 26);
+  human.phase = 'active';
+  human.timer = human.maxTimer;
+  humanState.ballX = 6;
+  humanState.ballVel = 210;
+
+  let humanHit: { intensity?: number; monsterKind?: string } | undefined;
+  for (let i = 0; i < 25; i++) {
+    const events = stepPhysics(humanState, 1 / 60, 0);
+    const found = events.find((e) => e.type === 'monster_hit' && e.monsterKind === 'human');
+    if (found) {
+      humanHit = found;
+      break;
+    }
+  }
+  assert.ok(humanHit, 'expected human monster_hit event');
+  assert.equal(humanHit?.intensity, 0.85);
+  assert.equal(humanState.ballVel < -80, true);
+});
+
+test('BalanceRenderer temporary screen blur and shockwave distortion activates, eases over ~1s, and resets cleanly', () => {
+  const renderer = new BalanceRenderer('classic');
+  assert.equal(renderer.isScreenDistortionActive(), false);
+  assert.equal(renderer.getScreenDistortionAmount(), 0);
+
+  renderer.triggerScreenDistortion(1.0, 40, -28, '#f97316', 1.05);
+  assert.equal(renderer.isScreenDistortionActive(), true);
+  assert.equal(renderer.hasActiveEffects(), true);
+  const initialAmount = renderer.getScreenDistortionAmount();
+  assert.equal(initialAmount > 0.9 && initialAmount <= 1.0, true);
+
+  // Mid-duration (~0.45s elapsed): smoothly decayed while still clearly active
+  renderer.tickVisuals(0.45);
+  const midAmount = renderer.getScreenDistortionAmount();
+  assert.equal(renderer.isScreenDistortionActive(), true);
+  assert.equal(midAmount > 0.2 && midAmount < 0.75, true);
+
+  // After full ~1.1s total elapsed, distortion finishes and clears cleanly
+  for (let i = 0; i < 45; i++) {
+    renderer.tickVisuals(1 / 60);
+  }
+  assert.equal(renderer.isScreenDistortionActive(), false);
+  assert.equal(renderer.getScreenDistortionAmount(), 0);
+
+  // Immediate resetEffects clears an active distortion instantly
+  renderer.triggerScreenDistortion(1.0, 0, 0, '#f97316', 1.05);
+  assert.equal(renderer.isScreenDistortionActive(), true);
+  renderer.resetEffects();
+  assert.equal(renderer.isScreenDistortionActive(), false);
+  assert.equal(renderer.getScreenDistortionAmount(), 0);
+});
+
+test('GameHud floating Combo xN helper toggles visibility, scales tiers, and pulses only on combo increase', () => {
+  const hidden = getComboIndicatorStyle(1);
+  assert.equal(hidden.visible, false);
+
+  const c2 = getComboIndicatorStyle(2);
+  assert.equal(c2.visible, true);
+  assert.equal(c2.label, 'Combo x2');
+  assert.equal(c2.tier, 'base');
+
+  const c4 = getComboIndicatorStyle(4);
+  assert.equal(c4.visible, true);
+  assert.equal(c4.label, 'Combo x4');
+  assert.equal(c4.tier, 'hot');
+
+  const c7 = getComboIndicatorStyle(7);
+  assert.equal(c7.visible, true);
+  assert.equal(c7.label, 'Combo x7');
+  assert.equal(c7.tier, 'blaze');
+
+  assert.equal(shouldPulseCombo(1, 2), true);
+  assert.equal(shouldPulseCombo(2, 3), true);
+  assert.equal(shouldPulseCombo(3, 3), false);
+  assert.equal(shouldPulseCombo(4, 1), false);
+  assert.equal(shouldPulseCombo(0, 1), false);
 });
 

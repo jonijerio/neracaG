@@ -1,12 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { computeAtmosphere } from '../game/atmosphere';
+import { getComboIndicatorStyle, shouldPulseCombo } from '../game/hudCombo';
 import { DIFFICULTY_PRESETS, HudSnapshot, MONSTER_PRESETS, POWERUP_PRESETS } from '../game/types';
 import { SparkBurst } from './UiFxOverlay';
 
 interface GameHudProps {
   hud: HudSnapshot;
   muted: boolean;
+  gyroSupported: boolean;
+  gyroEnabled: boolean;
   onToggleMute: () => void;
+  onToggleGyro: () => void;
   onPause: () => void;
   onRestart: () => void;
   onTiltPointer: (dir: -1 | 0 | 1) => void;
@@ -21,14 +25,19 @@ function formatTime(totalSeconds: number): string {
 export const GameHud: React.FC<GameHudProps> = ({
   hud,
   muted,
+  gyroSupported,
+  gyroEnabled,
   onToggleMute,
+  onToggleGyro,
   onPause,
   onRestart,
   onTiltPointer,
 }) => {
   const prevCoinsRef = useRef<number>(hud.runCoins);
   const prevLevelRef = useRef<number>(hud.level);
+  const prevComboRef = useRef<number>(hud.combo);
   const [coinFx, setCoinFx] = useState<{ key: number; delta: number }>({ key: 0, delta: 0 });
+  const [comboPulseKey, setComboPulseKey] = useState<number>(hud.combo > 1 ? 1 : 0);
   const [levelBanner, setLevelBanner] = useState<number | null>(null);
 
   useEffect(() => {
@@ -38,6 +47,13 @@ export const GameHud: React.FC<GameHudProps> = ({
     }
     prevCoinsRef.current = hud.runCoins;
   }, [hud.runCoins]);
+
+  useEffect(() => {
+    if (shouldPulseCombo(prevComboRef.current, hud.combo)) {
+      setComboPulseKey((k) => k + 1);
+    }
+    prevComboRef.current = hud.combo;
+  }, [hud.combo]);
 
   useEffect(() => {
     if (hud.level > prevLevelRef.current) {
@@ -52,6 +68,7 @@ export const GameHud: React.FC<GameHudProps> = ({
 
   const difficultyLabel = DIFFICULTY_PRESETS[hud.difficulty]?.label ?? 'Normal';
   const atmosphere = computeAtmosphere(hud.level);
+  const comboStyle = getComboIndicatorStyle(hud.combo);
   const activePowerUpInfo = hud.activePowerUp
     ? {
         label: POWERUP_PRESETS[hud.activePowerUp.type].label,
@@ -84,8 +101,127 @@ export const GameHud: React.FC<GameHudProps> = ({
   const leftActive = hud.tiltDir === -1;
   const rightActive = hud.tiltDir === 1;
 
+  const renderCenterStatus = (compact: boolean) => {
+    if (hud.missionBanner) {
+      return (
+        <div
+          data-testid={compact ? undefined : 'hud-mission-banner'}
+          className="neraca-alert-in flex flex-col items-center text-center"
+        >
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[#facc15] sm:text-xs">
+            Misi Selesai: {hud.missionBanner.title} · +{hud.missionBanner.bonusPoints} Poin
+          </span>
+          {hud.missionBanner.rewardName && (
+            <span className="text-[10px] font-semibold text-[#34d399] sm:text-[11px]">
+              Hadiah Terbuka: {hud.missionBanner.rewardName}
+            </span>
+          )}
+        </div>
+      );
+    }
+
+    if (levelBanner !== null) {
+      return (
+        <div
+          key={levelBanner}
+          data-testid={compact ? undefined : 'hud-level-up'}
+          className="neraca-alert-in flex flex-col items-center text-center"
+        >
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[#fde047] sm:text-xs">
+            Naik ke Level {levelBanner}!
+          </span>
+          <span className="text-[10px] font-medium text-[#cbd5e1] sm:text-[11px]">
+            {atmosphere.label}
+          </span>
+        </div>
+      );
+    }
+
+    if (hud.edgeDanger > 0.65) {
+      return (
+        <span className="neraca-alert-in neraca-danger-pulse text-[11px] font-bold uppercase tracking-wider text-[#fb7185] sm:text-xs">
+          Awas Tepi Papan!
+        </span>
+      );
+    }
+
+    if (monsterAlert) {
+      return (
+        <div
+          key={`${monsterAlert.preset.kind}-${monsterAlert.phase}`}
+          data-testid={compact ? undefined : 'hud-monster-alert'}
+          className="neraca-alert-in flex flex-col items-center text-center"
+        >
+          <span
+            className="text-[11px] font-bold uppercase tracking-wider sm:text-xs"
+            style={{ color: monsterAlert.preset.color }}
+          >
+            {monsterAlert.phase === 'telegraph'
+              ? `Awas ${monsterAlert.preset.name} (${monsterAlert.side})!`
+              : monsterAlert.preset.name}
+          </span>
+          {!compact && (
+            <span className="text-[11px] font-medium text-[#cbd5e1]">
+              {monsterAlert.preset.warningText}
+            </span>
+          )}
+        </div>
+      );
+    }
+
+    if (windLabel) {
+      return (
+        <span
+          key={`${hud.windPhase}-${hud.windDir}`}
+          className="neraca-alert-in text-[11px] font-bold uppercase tracking-wider text-[#7dd3fc] sm:text-xs"
+        >
+          {windLabel}
+        </span>
+      );
+    }
+
+    if (activePowerUpInfo) {
+      return (
+        <div
+          data-testid={compact ? undefined : 'hud-powerup'}
+          className="neraca-alert-in flex flex-col items-center gap-1"
+        >
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wide sm:text-xs">
+            <span className={activePowerUpInfo.isSlow ? 'text-[#38bdf8]' : 'text-[#34d399]'}>
+              {activePowerUpInfo.label}
+            </span>
+            <span className="font-mono-num text-[#cbd5e1]">
+              {activePowerUpInfo.remaining.toFixed(1)}d
+            </span>
+          </div>
+          <div className="relative h-1.5 w-28 overflow-hidden rounded-full bg-[#252f3a]">
+            <div
+              className={
+                activePowerUpInfo.isSlow
+                  ? 'relative h-full overflow-hidden bg-[#38bdf8]'
+                  : 'relative h-full overflow-hidden bg-[#34d399]'
+              }
+              style={{ width: `${activePowerUpInfo.pct}%` }}
+            >
+              <span className="neraca-shimmer absolute inset-y-0 left-0 w-10 bg-white/45" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <span
+        data-testid={compact ? undefined : 'hud-atmosphere'}
+        className="text-[11px] font-medium text-[#94a3b8] sm:text-xs"
+      >
+        {compact ? `Lv ${hud.level} · ${atmosphere.label}` : `${difficultyLabel} · Level ${hud.level} · ${atmosphere.label}`}
+      </span>
+    );
+  };
+
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
+    <div className="safe-area-hud pointer-events-none fixed inset-0 z-10 flex flex-col justify-between sm:p-6">
       {/* Peripheral Edge Danger Vignette */}
       {dangerStrength > 0.02 && (
         <div
@@ -123,13 +259,37 @@ export const GameHud: React.FC<GameHudProps> = ({
             <div className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] sm:text-[11px]">
               Skor
             </div>
-            <div
-              key={`score-${hud.targetsCleared}`}
-              data-testid="hud-score"
-              className="neraca-pop font-mono-num text-2xl font-bold leading-none text-[#f4f1ea] sm:text-4xl"
-              style={{ textShadow: '0 2px 6px rgba(0,0,0,0.6)' }}
-            >
-              {Math.round(hud.score)}
+            <div className="relative flex items-baseline gap-2 sm:gap-2.5">
+              <div
+                key={`score-${hud.targetsCleared}`}
+                data-testid="hud-score"
+                className="neraca-pop font-mono-num text-2xl font-bold leading-none text-[#f4f1ea] sm:text-4xl"
+                style={{ textShadow: '0 2px 6px rgba(0,0,0,0.6)' }}
+              >
+                {Math.round(hud.score)}
+              </div>
+
+              {comboStyle.visible && (
+                <div
+                  key={`combo-float-${comboPulseKey}`}
+                  data-testid="hud-combo-multiplier"
+                  aria-live="polite"
+                  className="neraca-combo-pulse relative inline-flex -translate-y-0.5 items-center whitespace-nowrap font-mono-num text-xs font-extrabold tracking-tight sm:text-base"
+                  style={{
+                    color: comboStyle.color,
+                    textShadow: `0 2px 8px rgba(0,0,0,0.8), 0 0 14px ${comboStyle.glowColor}`,
+                  }}
+                >
+                  {comboPulseKey > 0 && (
+                    <span
+                      aria-hidden="true"
+                      className="neraca-ring-pulse pointer-events-none absolute -inset-x-2 -inset-y-1 rounded-full border"
+                      style={{ borderColor: comboStyle.color }}
+                    />
+                  )}
+                  <span>{comboStyle.label}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -151,20 +311,6 @@ export const GameHud: React.FC<GameHudProps> = ({
                 {difficultyLabel}
               </span>
             </div>
-
-            {hud.combo > 1 && (
-              <div>
-                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] sm:mr-1.5 sm:text-[11px]">
-                  Kombo
-                </span>
-                <span
-                  key={`combo-${hud.combo}`}
-                  className="neraca-pop font-mono-num inline-block font-bold text-[#34d399]"
-                >
-                  x{hud.combo}
-                </span>
-              </div>
-            )}
 
             <div className="hidden sm:block">
               <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8]">
@@ -197,97 +343,52 @@ export const GameHud: React.FC<GameHudProps> = ({
             </div>
 
             {hud.edgeShields > 0 && (
-              <div className="hidden sm:block">
+              <div>
                 <span
                   data-testid="hud-shield"
-                  className="neraca-alert-in inline-block text-[11px] font-bold uppercase tracking-wider text-[#38bdf8]"
+                  className="neraca-alert-in inline-block text-[10px] font-bold uppercase tracking-wider text-[#38bdf8] sm:text-[11px]"
                 >
-                  Perisai Siap
+                  <span className="sm:hidden">Perisai</span>
+                  <span className="hidden sm:inline">Perisai Siap</span>
                 </span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Top-Center: Mission Completion / Level-Up / Active Power-Up / Live Hazard Alert */}
+        {/* Top-Center (Tablet & Desktop): Mission / Level-Up / Active Power-Up / Hazard Alert */}
         <div className="hidden min-h-6 flex-col items-center justify-center gap-1 sm:flex">
-          {hud.missionBanner ? (
-            <div data-testid="hud-mission-banner" className="neraca-alert-in flex flex-col items-center text-center">
-              <span className="text-xs font-bold uppercase tracking-wider text-[#facc15]">
-                Misi Selesai: {hud.missionBanner.title} · +{hud.missionBanner.bonusPoints} Poin
-              </span>
-              {hud.missionBanner.rewardName && (
-                <span className="text-[11px] font-semibold text-[#34d399]">
-                  Hadiah Terbuka: {hud.missionBanner.rewardName}
-                </span>
-              )}
-            </div>
-          ) : levelBanner !== null ? (
-            <div key={levelBanner} data-testid="hud-level-up" className="neraca-alert-in flex flex-col items-center text-center">
-              <span className="text-xs font-bold uppercase tracking-wider text-[#fde047]">
-                Naik ke Level {levelBanner}!
-              </span>
-              <span className="text-[11px] font-medium text-[#cbd5e1]">
-                {atmosphere.label}
-              </span>
-            </div>
-          ) : hud.edgeDanger > 0.65 ? (
-            <span className="neraca-alert-in neraca-danger-pulse text-xs font-bold uppercase tracking-wider text-[#fb7185]">
-              Awas Tepi Papan!
-            </span>
-          ) : monsterAlert ? (
-            <div
-              key={`${monsterAlert.preset.kind}-${monsterAlert.phase}`}
-              data-testid="hud-monster-alert"
-              className="neraca-alert-in flex flex-col items-center text-center"
-            >
-              <span
-                className="text-xs font-bold uppercase tracking-wider"
-                style={{ color: monsterAlert.preset.color }}
-              >
-                {monsterAlert.phase === 'telegraph'
-                  ? `Awas ${monsterAlert.preset.name} (${monsterAlert.side})!`
-                  : monsterAlert.preset.name}
-              </span>
-              <span className="text-[11px] font-medium text-[#cbd5e1]">
-                {monsterAlert.preset.warningText}
-              </span>
-            </div>
-          ) : windLabel ? (
-            <span
-              key={`${hud.windPhase}-${hud.windDir}`}
-              className="neraca-alert-in text-xs font-bold uppercase tracking-wider text-[#7dd3fc]"
-            >
-              {windLabel}
-            </span>
-          ) : activePowerUpInfo ? (
-            <div data-testid="hud-powerup" className="neraca-alert-in flex flex-col items-center gap-1">
-              <div className="flex items-center gap-2 text-xs font-bold tracking-wide">
-                <span className={activePowerUpInfo.isSlow ? 'text-[#38bdf8]' : 'text-[#34d399]'}>
-                  {activePowerUpInfo.label}
-                </span>
-                <span className="font-mono-num text-[#cbd5e1]">
-                  {activePowerUpInfo.remaining.toFixed(1)}d
-                </span>
-              </div>
-              <div className="relative h-1.5 w-28 overflow-hidden rounded-full bg-[#252f3a]">
-                <div
-                  className={activePowerUpInfo.isSlow ? 'relative h-full overflow-hidden bg-[#38bdf8]' : 'relative h-full overflow-hidden bg-[#34d399]'}
-                  style={{ width: `${activePowerUpInfo.pct}%` }}
-                >
-                  <span className="neraca-shimmer absolute inset-y-0 left-0 w-10 bg-white/45" />
-                </div>
-              </div>
-            </div>
-          ) : (
-            <span data-testid="hud-atmosphere" className="text-xs font-medium text-[#94a3b8]">
-              {difficultyLabel} · Level {hud.level} · {atmosphere.label}
-            </span>
-          )}
+          {renderCenterStatus(false)}
         </div>
 
         {/* Top-Right: Compact World-Matched Utility Icon Buttons */}
         <div className="pointer-events-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+          {gyroSupported && (
+            <button
+              type="button"
+              tabIndex={-1}
+              data-testid="toggle-gyro"
+              aria-pressed={gyroEnabled}
+              aria-label={gyroEnabled ? 'Matikan Kontrol Sensor Kemiringan' : 'Aktifkan Kontrol Sensor Kemiringan'}
+              title={gyroEnabled ? 'Sensor Kemiringan Aktif' : 'Gunakan Sensor Kemiringan HP'}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onToggleGyro();
+              }}
+              className={`neraca-btn-tactile flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border transition-colors ${
+                gyroEnabled
+                  ? 'border-[#e89b2d] bg-[#2a2216]/95 text-[#fde047] shadow-[0_0_12px_rgba(232,155,45,0.28)]'
+                  : 'border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469]'
+              }`}
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="7" y="3" width="10" height="18" rx="2" transform="rotate(-12 12 12)" />
+                <path d="M4 12a8 8 0 0 1 3-6.2" />
+                <path d="M20 12a8 8 0 0 1-3 6.2" />
+              </svg>
+            </button>
+          )}
+
           <button
             type="button"
             tabIndex={-1}
@@ -297,7 +398,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.currentTarget.blur();
               onToggleMute();
             }}
-            className="neraca-btn-tactile flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
+            className="neraca-btn-tactile flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469]"
           >
             {muted ? (
               <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -323,7 +424,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.currentTarget.blur();
               onRestart();
             }}
-            className="neraca-btn-tactile flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
+            className="neraca-btn-tactile flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469]"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
@@ -340,7 +441,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.currentTarget.blur();
               onPause();
             }}
-            className="neraca-btn-tactile flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:h-10 sm:w-10"
+            className="neraca-btn-tactile flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[#334155] bg-[#1e252e]/90 text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469]"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
               <line x1="9" y1="6" x2="9" y2="18" />
@@ -350,20 +451,29 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       </div>
 
+      {/* Mobile Compact Alert Strip (ensures warnings, monsters, wind & mission banners show cleanly on < 640px screens) */}
+      <div className="relative z-10 mt-1 flex min-h-5 items-center justify-center sm:hidden">
+        {renderCenterStatus(true)}
+      </div>
+
+      <div className="flex-1" />
+
       {/* Bottom Perimeter: Reactive Touch/Keyboard Tilt Paddles & Hint */}
-      <div className="relative z-10 flex items-end justify-between gap-4">
+      <div className="relative z-10 flex items-end justify-between gap-3 sm:gap-4">
         <button
           type="button"
           tabIndex={-1}
           aria-label="Miringkan Kiri"
+          onContextMenu={(e) => e.preventDefault()}
           onPointerDown={(e) => {
             e.preventDefault();
+            e.currentTarget.setPointerCapture?.(e.pointerId);
             onTiltPointer(-1);
           }}
           onPointerUp={() => onTiltPointer(0)}
           onPointerLeave={() => onTiltPointer(0)}
           onPointerCancel={() => onTiltPointer(0)}
-          className={`pointer-events-auto flex h-12 min-w-24 cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-all duration-100 active:scale-95 ${
+          className={`pointer-events-auto flex min-h-12 min-w-[104px] touch-none select-none cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-all duration-100 active:scale-95 sm:min-w-[116px] ${
             leftActive
               ? 'scale-95 border-[#e89b2d] bg-[#2a2216]/95 text-[#f5c469] shadow-[0_0_16px_rgba(232,155,45,0.28)]'
               : 'border-[#334155] bg-[#1b222a]/90 text-[#e2e8f0] hover:border-[#d89b3c]'
@@ -379,21 +489,25 @@ export const GameHud: React.FC<GameHudProps> = ({
           className="hidden pb-1 text-center text-xs font-medium text-[#e2e8f0]/80 md:block"
           style={{ textShadow: '0 1px 4px rgba(0, 0, 0, 0.7)' }}
         >
-          Tahan bola di zona target bercahaya untuk bonus kombo
+          {gyroEnabled
+            ? 'Mode Sensor Aktif · Miringkan perangkat atau sentuh tombol'
+            : 'Tahan bola di zona target bercahaya untuk bonus kombo'}
         </div>
 
         <button
           type="button"
           tabIndex={-1}
           aria-label="Miringkan Kanan"
+          onContextMenu={(e) => e.preventDefault()}
           onPointerDown={(e) => {
             e.preventDefault();
+            e.currentTarget.setPointerCapture?.(e.pointerId);
             onTiltPointer(1);
           }}
           onPointerUp={() => onTiltPointer(0)}
           onPointerLeave={() => onTiltPointer(0)}
           onPointerCancel={() => onTiltPointer(0)}
-          className={`pointer-events-auto flex h-12 min-w-24 cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-all duration-100 active:scale-95 ${
+          className={`pointer-events-auto flex min-h-12 min-w-[104px] touch-none select-none cursor-pointer items-center justify-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-all duration-100 active:scale-95 sm:min-w-[116px] ${
             rightActive
               ? 'scale-95 border-[#e89b2d] bg-[#2a2216]/95 text-[#f5c469] shadow-[0_0_16px_rgba(232,155,45,0.28)]'
               : 'border-[#334155] bg-[#1b222a]/90 text-[#e2e8f0] hover:border-[#d89b3c]'

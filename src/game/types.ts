@@ -68,7 +68,7 @@ export const POWERUP_PRESETS: Record<PowerUpType, { id: PowerUpType; label: stri
   },
 };
 
-export type MonsterKind = 'monkey' | 'alien' | 'human' | 'robot' | 'slime';
+export type MonsterKind = 'monkey' | 'alien' | 'human' | 'robot' | 'slime' | 'titan';
 
 export type MonsterPhase = 'telegraph' | 'active';
 
@@ -79,6 +79,8 @@ export interface MonsterPreset {
   color: string;
   duration: number;
   weight: number;
+  isGiant?: boolean;
+  hitRadius?: number;
 }
 
 export const MONSTER_PRESETS: Record<MonsterKind, MonsterPreset> = {
@@ -105,6 +107,7 @@ export const MONSTER_PRESETS: Record<MonsterKind, MonsterPreset> = {
     color: '#fb7185',
     duration: 5.0,
     weight: 2.35,
+    hitRadius: 15,
   },
   robot: {
     kind: 'robot',
@@ -113,6 +116,7 @@ export const MONSTER_PRESETS: Record<MonsterKind, MonsterPreset> = {
     color: '#a78bfa',
     duration: 5.2,
     weight: 1.25,
+    hitRadius: 15,
   },
   slime: {
     kind: 'slime',
@@ -121,6 +125,16 @@ export const MONSTER_PRESETS: Record<MonsterKind, MonsterPreset> = {
     color: '#4ade80',
     duration: 6.0,
     weight: 1.15,
+  },
+  titan: {
+    kind: 'titan',
+    name: 'Titan Batu',
+    warningText: 'Monster raksasa menginjak papan! Hindari benturan kerasnya!',
+    color: '#f97316',
+    duration: 6.2,
+    weight: 3.1,
+    isGiant: true,
+    hitRadius: 28,
   },
 };
 

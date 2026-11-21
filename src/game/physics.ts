@@ -17,6 +17,7 @@ export const MONSTER_KINDS: readonly MonsterKind[] = [
   'human',
   'robot',
   'slime',
+  'titan',
 ];
 
 const C = PHYSICS_CONSTANTS;
@@ -149,15 +150,16 @@ export function getTargetPointValue(level: number, combo: number): number {
 }
 
 function pickMonsterPosition(state: PhysicsState, kind: MonsterKind): number {
-  const minAbs = kind === 'human' ? 125 : kind === 'robot' ? 170 : 68;
-  const maxAbs = kind === 'robot' ? 215 : 205;
+  const minAbs = kind === 'human' ? 125 : kind === 'titan' ? 115 : kind === 'robot' ? 170 : 68;
+  const maxAbs = kind === 'robot' ? 215 : kind === 'titan' ? 195 : 205;
+  const minBallDist = kind === 'titan' ? 56 : 34;
   let candidate = 0;
   for (let i = 0; i < 8; i++) {
     const side: -1 | 1 = nextRandom(state) < 0.5 ? -1 : 1;
     const dist = minAbs + nextRandom(state) * (maxAbs - minAbs);
     candidate = Math.round(side * dist);
     const overlapsExisting = state.monsters.some((m) => Math.abs(m.x - candidate) < 58);
-    if (!overlapsExisting && Math.abs(candidate - state.ballX) >= 34) {
+    if (!overlapsExisting && Math.abs(candidate - state.ballX) >= minBallDist) {
       break;
     }
   }
@@ -297,7 +299,7 @@ export function stepPhysics(
               monsterKind: m.kind,
               x: m.x,
               dir: m.dir,
-              intensity: m.kind === 'human' ? 0.65 : 0.44,
+              intensity: m.kind === 'titan' ? 0.92 : m.kind === 'human' ? 0.65 : 0.44,
             });
           }
           remainingMonsters.push(m);
@@ -351,6 +353,25 @@ export function stepPhysics(
           if (state.boardAngle * Math.sign(m.x) < -0.15) {
             m.timer -= subDt * 0.85;
           }
+          // Heavy body check collision if ball slams into Manusia Berat
+          const hitDist = C.BALL_RADIUS + (mPreset.hitRadius ?? 15);
+          if (m.hitCooldown <= 0 && Math.abs(state.ballX - m.x) <= hitDist) {
+            const pushDir: -1 | 1 = state.ballX >= m.x ? 1 : -1;
+            state.ballX = clamp(
+              m.x + pushDir * (hitDist + 1),
+              -C.BOARD_HALF_LEN + 18,
+              C.BOARD_HALF_LEN - 18
+            );
+            state.ballVel = pushDir * Math.max(155, Math.abs(state.ballVel) * 0.65 + 110);
+            m.hitCooldown = 0.85;
+            events.push({
+              type: 'monster_hit',
+              monsterKind: 'human',
+              x: m.x,
+              dir: pushDir,
+              intensity: 0.85,
+            });
+          }
         } else if (m.kind === 'robot') {
           m.hopPhase += subDt * 8.0;
           m.x += m.vx * subDt;
@@ -375,7 +396,7 @@ export function stepPhysics(
               monsterKind: 'robot',
               x: m.x,
               dir: pushDir,
-              intensity: 0.65,
+              intensity: 0.72,
             });
           }
         } else if (m.kind === 'slime') {
@@ -383,6 +404,36 @@ export function stepPhysics(
           monsterTorque += normX * mPreset.weight * 1.8 * levelScale;
           if (Math.abs(state.ballX - m.x) <= 40) {
             monsterExtraFriction += 4.2;
+          }
+        } else if (m.kind === 'titan') {
+          m.hopPhase += subDt * 2.1;
+          const stompWave = Math.max(0, Math.sin(m.hopPhase));
+          m.hopHeight = stompWave > 0.7 ? (stompWave - 0.7) * 28 : 0;
+          const stompBias = m.hopHeight < 2 ? 2.45 : 1.75;
+          monsterTorque += normX * mPreset.weight * stompBias * levelScale;
+          // Counter-tilting strongly shakes off Titan faster
+          if (state.boardAngle * Math.sign(m.x) < -0.18) {
+            m.timer -= subDt * 0.65;
+          }
+          // Giant stone obstacle body collision -> massive rebound & full-strength distortion trigger
+          const titanHitDist = C.BALL_RADIUS + (mPreset.hitRadius ?? 28);
+          if (m.hitCooldown <= 0 && Math.abs(state.ballX - m.x) <= titanHitDist) {
+            const pushDir: -1 | 1 = state.ballX >= m.x ? 1 : -1;
+            state.ballX = clamp(
+              m.x + pushDir * (titanHitDist + 1),
+              -C.BOARD_HALF_LEN + 18,
+              C.BOARD_HALF_LEN - 18
+            );
+            state.ballVel = pushDir * Math.max(195, Math.abs(state.ballVel) * 0.75 + 135);
+            state.boardAngularVel += -pushDir * 0.42;
+            m.hitCooldown = 0.95;
+            events.push({
+              type: 'monster_hit',
+              monsterKind: 'titan',
+              x: m.x,
+              dir: pushDir,
+              intensity: 1.0,
+            });
           }
         }
 

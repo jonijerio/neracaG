@@ -38,7 +38,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
       aria-modal="true"
       aria-labelledby="modal-title"
     >
-      <div className="neraca-modal-card w-full max-w-md rounded-xl border border-[#3f4b5b] bg-[#192028] p-6 shadow-2xl sm:p-8">
+      <div className="neraca-modal-card max-h-[90dvh] w-full max-w-md overflow-y-auto overscroll-contain rounded-xl border border-[#3f4b5b] bg-[#192028] p-5 shadow-2xl sm:p-8">
         <div className="flex items-start justify-between gap-3">
           <h2 id="modal-title" className="font-display text-2xl font-bold text-[#f4f1ea] sm:text-3xl">
             {isPaused ? 'Permainan Dijeda' : 'Bola Terjatuh!'}

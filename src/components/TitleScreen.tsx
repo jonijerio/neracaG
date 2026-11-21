@@ -151,16 +151,16 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   };
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-5 sm:p-6 md:p-12 lg:p-16">
+    <div className="safe-area-hud pointer-events-none fixed inset-0 z-10 flex flex-col justify-between md:p-12 lg:p-16">
       {/* Main negative-space left-third lockup */}
       <div
-        className={`flex flex-1 flex-col items-center justify-start pt-2 text-center transition-opacity duration-150 md:max-w-md md:items-start md:justify-center md:pt-0 md:text-left ${
+        className={`flex min-h-0 flex-1 flex-col items-center justify-start pt-1 text-center transition-opacity duration-150 [@media(min-width:560px)_and_(max-height:520px)]:max-w-sm [@media(min-width:560px)_and_(max-height:520px)]:items-start [@media(min-width:560px)_and_(max-height:520px)]:justify-center [@media(min-width:560px)_and_(max-height:520px)]:pt-0 [@media(min-width:560px)_and_(max-height:520px)]:text-left md:max-w-md md:items-start md:justify-center md:pt-0 md:text-left ${
           anyDrawerOpen ? 'invisible opacity-0' : 'opacity-100'
         }`}
       >
         <svg
           viewBox="0 0 360 112"
-          className="neraca-enter-up h-auto w-56 sm:w-68 md:w-80"
+          className="neraca-enter-up h-auto w-44 sm:w-64 [@media(max-height:520px)]:w-36 md:w-80"
           role="img"
           aria-label="Neraca"
         >
@@ -206,7 +206,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         </svg>
 
         <p
-          className="neraca-enter-up mt-2.5 max-w-sm text-sm leading-relaxed text-[#cbd5e1] sm:text-base md:mt-3 md:text-lg"
+          className="neraca-enter-up mt-2 max-w-sm text-xs leading-relaxed text-[#cbd5e1] sm:text-base [@media(max-height:520px)]:hidden md:mt-3 md:text-lg"
           style={{ animationDelay: '55ms' }}
         >
           Jaga bola tetap seimbang di atas papan yang miring dan kumpulkan koin di setiap kemenangan.
@@ -214,7 +214,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
         {/* Coin Wallet & Best Score Strip */}
         <div
-          className="neraca-enter-up mt-2.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm text-[#cbd5e1] md:justify-start"
+          className="neraca-enter-up mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm text-[#cbd5e1] [@media(min-width:560px)_and_(max-height:520px)]:mt-1.5 [@media(min-width:560px)_and_(max-height:520px)]:justify-start md:mt-2.5 md:justify-start"
           style={{ animationDelay: '95ms' }}
         >
           <div className="flex items-center gap-1.5">
@@ -248,7 +248,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
         {/* Segmented Difficulty Selector */}
         <div
-          className="neraca-enter-up pointer-events-auto mt-3.5 flex flex-col items-center md:mt-4 md:items-start"
+          className="neraca-enter-up pointer-events-auto mt-2.5 flex flex-col items-center [@media(min-width:560px)_and_(max-height:520px)]:mt-2 [@media(min-width:560px)_and_(max-height:520px)]:items-start md:mt-4 md:items-start"
           style={{ animationDelay: '130ms' }}
         >
           <div
@@ -267,7 +267,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                     e.currentTarget.blur();
                     onSelectDifficulty(id);
                   }}
-                  className={`neraca-btn-tactile cursor-pointer whitespace-nowrap rounded-md px-4 py-1.5 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f5c469] ${
+                  className={`neraca-btn-tactile min-h-9 cursor-pointer whitespace-nowrap rounded-md px-3.5 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f5c469] sm:px-4 sm:text-sm ${
                     active
                       ? 'bg-[#2b3644] text-[#f5c469] shadow-sm'
                       : 'text-[#94a3b8] hover:text-[#e2e8f0]'
@@ -278,14 +278,14 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               );
             })}
           </div>
-          <p className="mt-1.5 text-xs text-[#94a3b8]">
+          <p className="mt-1 text-xs text-[#94a3b8] [@media(max-height:520px)]:hidden">
             {DIFFICULTY_DESCRIPTIONS[difficulty]}
           </p>
         </div>
 
         {/* Compact Skin Selector Bar (cycles owned skins; opens gallery to view/buy all 15) */}
         <div
-          className="neraca-enter-up pointer-events-auto mt-3 flex w-full max-w-[358px] items-center gap-1 rounded-lg border border-[#334155] bg-[#1a2129]/95 p-1 shadow-md transition-colors hover:border-[#475569] sm:max-w-sm"
+          className="neraca-enter-up pointer-events-auto mt-2.5 flex w-full max-w-[340px] items-center gap-1 rounded-lg border border-[#334155] bg-[#1a2129]/95 p-1 shadow-md transition-colors hover:border-[#475569] [@media(max-height:520px)]:mt-2 sm:max-w-sm"
           style={{ animationDelay: '165ms' }}
         >
           <button
@@ -295,7 +295,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               e.currentTarget.blur();
               cycleUnlockedSkin(-1);
             }}
-            className="neraca-btn-tactile flex h-10 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#94a3b8] hover:bg-[#252f3c] hover:text-[#f4f1ea] sm:w-9"
+            className="neraca-btn-tactile flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#94a3b8] hover:bg-[#252f3c] hover:text-[#f4f1ea]"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 18 9 12 15 6" />
@@ -352,7 +352,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               e.currentTarget.blur();
               cycleUnlockedSkin(1);
             }}
-            className="neraca-btn-tactile flex h-10 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#94a3b8] hover:bg-[#252f3c] hover:text-[#f4f1ea] sm:w-9"
+            className="neraca-btn-tactile flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#94a3b8] hover:bg-[#252f3c] hover:text-[#f4f1ea]"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="9 18 15 12 9 6" />
@@ -362,7 +362,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
         {/* Primary Action Row: Play, Shop, Daily Missions */}
         <div
-          className="neraca-enter-up pointer-events-auto mt-4 flex flex-wrap items-center justify-center gap-2.5 md:mt-5 md:justify-start"
+          className="neraca-enter-up pointer-events-auto mt-3 flex flex-wrap items-center justify-center gap-2 [@media(min-width:560px)_and_(max-height:520px)]:mt-2.5 [@media(min-width:560px)_and_(max-height:520px)]:justify-start sm:gap-2.5 md:mt-5 md:justify-start"
           style={{ animationDelay: '205ms' }}
         >
           <button
@@ -372,7 +372,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               e.currentTarget.blur();
               onStart();
             }}
-            className="neraca-btn-tactile relative cursor-pointer overflow-hidden whitespace-nowrap rounded-lg bg-[#e89b2d] px-6 py-3 text-base font-bold text-[#14181e] shadow-lg hover:bg-[#f0aa42] hover:shadow-[0_6px_22px_rgba(232,155,45,0.38)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f5c469] sm:py-3.5"
+            className="neraca-btn-tactile relative min-h-11 cursor-pointer overflow-hidden whitespace-nowrap rounded-lg bg-[#e89b2d] px-5 py-2.5 text-sm font-bold text-[#14181e] shadow-lg hover:bg-[#f0aa42] hover:shadow-[0_6px_22px_rgba(232,155,45,0.38)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f5c469] sm:px-6 sm:py-3.5 sm:text-base"
           >
             <SheenSweep />
             <span className="relative z-10">Mulai Main</span>
@@ -388,7 +388,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               setMissionDrawerOpen(false);
               setShopDrawerOpen((prev) => !prev);
             }}
-            className="neraca-btn-tactile flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-lg border border-[#d89b3c]/70 bg-[#1e2631] px-4 py-3 text-sm font-bold text-[#fde047] hover:border-[#f5c469] hover:bg-[#27313f] hover:shadow-[0_4px_16px_rgba(234,179,8,0.22)] sm:py-3.5"
+            className="neraca-btn-tactile flex min-h-11 cursor-pointer items-center gap-2 whitespace-nowrap rounded-lg border border-[#d89b3c]/70 bg-[#1e2631] px-4 py-2.5 text-sm font-bold text-[#fde047] hover:border-[#f5c469] hover:bg-[#27313f] hover:shadow-[0_4px_16px_rgba(234,179,8,0.22)] sm:py-3.5"
           >
             <CoinIcon className="h-4 w-4" />
             <span>Toko</span>
@@ -404,7 +404,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               setShopDrawerOpen(false);
               setMissionDrawerOpen((prev) => !prev);
             }}
-            className="neraca-btn-tactile flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-lg border border-[#334155] bg-[#1a2129]/95 px-3.5 py-3 text-sm font-semibold text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:py-3.5"
+            className="neraca-btn-tactile flex min-h-11 cursor-pointer items-center gap-2 whitespace-nowrap rounded-lg border border-[#334155] bg-[#1a2129]/95 px-3.5 py-2.5 text-sm font-semibold text-[#e2e8f0] hover:border-[#d89b3c] hover:text-[#f5c469] sm:py-3.5"
           >
             <span>Misi</span>
             <span
@@ -420,12 +420,12 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
       {/* Single flat borderless control-hint line */}
       <div
-        className={`text-center text-xs tracking-wide text-[#cbd5e1]/80 transition-opacity duration-150 md:text-left md:text-sm ${
+        className={`text-center text-[11px] tracking-wide text-[#cbd5e1]/80 transition-opacity duration-150 [@media(min-width:560px)_and_(max-height:520px)]:text-left md:text-left md:text-sm ${
           anyDrawerOpen ? 'invisible opacity-0' : 'opacity-100'
         }`}
         style={{ textShadow: '0 1px 4px rgba(0,0,0,0.65)' }}
       >
-        A / D atau Panah Kiri / Kanan untuk memiringkan · Sentuh atau Seret · P Jeda · M Suara
+        A / D atau Panah untuk memiringkan · Sentuh, Seret, atau Sensor HP · P Jeda · M Suara
       </div>
 
       {/* Left-docked Shop Drawer (Skins + Consumables & Permanent Upgrades) */}
@@ -435,7 +435,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           aria-modal="false"
           aria-label="Toko Neraca"
           data-testid="shop-drawer"
-          className="neraca-drawer-in pointer-events-auto fixed inset-x-4 top-4 bottom-4 z-30 flex flex-col rounded-xl border border-[#3b4757] bg-[#151b23] p-4 shadow-2xl md:inset-x-auto md:top-6 md:bottom-6 md:left-8 md:w-[520px]"
+          className="neraca-drawer-in pointer-events-auto fixed inset-x-4 top-4 bottom-4 z-30 flex max-h-[calc(100dvh-2rem)] flex-col rounded-xl border border-[#3b4757] bg-[#151b23] p-4 shadow-2xl md:inset-x-auto md:top-6 md:bottom-6 md:left-8 md:w-[520px]"
         >
           <div className="flex items-center justify-between border-b border-[#283240] pb-3">
             <div>
@@ -710,7 +710,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           aria-modal="false"
           aria-label="Koleksi 15 Skin Neraca dan Bola"
           data-testid="skin-picker-drawer"
-          className="neraca-drawer-in pointer-events-auto fixed inset-x-4 top-4 bottom-4 z-30 flex flex-col rounded-xl border border-[#3b4757] bg-[#151b23] p-4 shadow-2xl md:inset-x-auto md:top-6 md:bottom-6 md:left-8 md:w-[500px]"
+          className="neraca-drawer-in pointer-events-auto fixed inset-x-4 top-4 bottom-4 z-30 flex max-h-[calc(100dvh-2rem)] flex-col rounded-xl border border-[#3b4757] bg-[#151b23] p-4 shadow-2xl md:inset-x-auto md:top-6 md:bottom-6 md:left-8 md:w-[500px]"
         >
           <div className="flex items-center justify-between border-b border-[#283240] pb-3">
             <div>
@@ -802,7 +802,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           aria-modal="false"
           aria-label="Misi Harian dan Hadiah Spesial"
           data-testid="daily-missions-drawer"
-          className="neraca-drawer-in pointer-events-auto fixed inset-x-4 top-4 bottom-4 z-30 flex flex-col rounded-xl border border-[#3b4757] bg-[#151b23] p-4 shadow-2xl md:inset-x-auto md:top-6 md:bottom-6 md:left-8 md:w-[490px]"
+          className="neraca-drawer-in pointer-events-auto fixed inset-x-4 top-4 bottom-4 z-30 flex max-h-[calc(100dvh-2rem)] flex-col rounded-xl border border-[#3b4757] bg-[#151b23] p-4 shadow-2xl md:inset-x-auto md:top-6 md:bottom-6 md:left-8 md:w-[490px]"
         >
           <div className="flex items-center justify-between border-b border-[#283240] pb-3">
             <div>

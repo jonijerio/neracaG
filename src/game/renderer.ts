@@ -3,6 +3,7 @@ import {
   computeAtmosphereFromProgress,
   levelToAtmosphereProgress,
 } from './atmosphere';
+import { isWideTitleLayout } from './input';
 import { ballBoardToWorld, clamp } from './physics';
 import { SpecialRewardId } from './missions';
 import { SKIN_PRESETS, SkinConfig, SkinId, getSkinConfig } from './skins';
@@ -17,6 +18,7 @@ import {
 const C = PHYSICS_CONSTANTS;
 
 const PARTICLE_POOL_SIZE = 2600;
+const ATMOSPHERE_CROSSFADE_DURATION = 1.65;
 
 const CONFETTI_PALETTE = [
   '#fde047',
@@ -117,12 +119,26 @@ export class BalanceRenderer {
   private shakeImpulseX = 0;
   private shakeImpulseY = 0;
   private animTime = 0;
+  private currentAtmosphereLevel = 1;
   private atmosphereProgress = 0;
   private targetAtmosphereProgress = 0;
+  private fromAtmosphereProgress = 0;
+  private toAtmosphereProgress = 0;
+  private atmosphereCrossFade = 1;
   private lightningFlash = 0;
   private lightningCooldown = 2.4;
   private lastRenderWidth = 1280;
   private lastRenderHeight = 720;
+  private lastFulcrumX = 640;
+  private lastFulcrumY = 388;
+  private lastScale = 1;
+  private distortionTimer = 0;
+  private distortionDuration = 1.05;
+  private distortionIntensity = 0;
+  private distortionOriginNormX = 0.5;
+  private distortionOriginNormY = 0.5;
+  private distortionColor = '#f97316';
+  private distortionScratch: HTMLCanvasElement | null = null;
   private gridCache: HTMLCanvasElement | null = null;
   private gridCacheW = 0;
   private gridCacheH = 0;
@@ -222,11 +238,49 @@ export class BalanceRenderer {
   }
 
   public setAtmosphereLevel(level: number): void {
-    this.targetAtmosphereProgress = levelToAtmosphereProgress(level);
+    if (level === this.currentAtmosphereLevel) {
+      return;
+    }
+    const nextTarget = levelToAtmosphereProgress(level);
+    this.currentAtmosphereLevel = level;
+    this.fromAtmosphereProgress = this.atmosphereProgress;
+    this.toAtmosphereProgress = nextTarget;
+    this.targetAtmosphereProgress = nextTarget;
+    this.atmosphereCrossFade =
+      Math.abs(nextTarget - this.fromAtmosphereProgress) > 0.0001 ? 0 : 1;
   }
 
   public getAtmosphereState(): AtmosphereState {
-    return computeAtmosphereFromProgress(this.atmosphereProgress);
+    if (this.atmosphereCrossFade >= 0.999) {
+      return computeAtmosphereFromProgress(this.atmosphereProgress);
+    }
+    const fromAtmo = computeAtmosphereFromProgress(this.fromAtmosphereProgress);
+    const toAtmo = computeAtmosphereFromProgress(this.toAtmosphereProgress);
+    const t = this.atmosphereCrossFade;
+    const eased = t * t * (3 - 2 * t);
+    const lerp = (a: number, b: number) => a + (b - a) * eased;
+    return {
+      ...(eased < 0.5 ? fromAtmo : toAtmo),
+      progress: lerp(fromAtmo.progress, toAtmo.progress),
+      glowAlpha: lerp(fromAtmo.glowAlpha, toAtmo.glowAlpha),
+      sunOpacity: lerp(fromAtmo.sunOpacity, toAtmo.sunOpacity),
+      sunYNorm: lerp(fromAtmo.sunYNorm, toAtmo.sunYNorm),
+      sunRadius: lerp(fromAtmo.sunRadius, toAtmo.sunRadius),
+      starAlpha: lerp(fromAtmo.starAlpha, toAtmo.starAlpha),
+      cloudAlpha: lerp(fromAtmo.cloudAlpha, toAtmo.cloudAlpha),
+      cloudSpeed: lerp(fromAtmo.cloudSpeed, toAtmo.cloudSpeed),
+      rainIntensity: lerp(fromAtmo.rainIntensity, toAtmo.rainIntensity),
+      lightningChance: lerp(fromAtmo.lightningChance, toAtmo.lightningChance),
+      gridAlpha: lerp(fromAtmo.gridAlpha, toAtmo.gridAlpha),
+    };
+  }
+
+  public getAtmosphereCrossFade(): number {
+    return this.atmosphereCrossFade;
+  }
+
+  public isAtmosphereTransitioning(): boolean {
+    return this.atmosphereCrossFade < 0.999;
   }
 
   public resetEffects(): void {
@@ -240,17 +294,63 @@ export class BalanceRenderer {
     this.trauma = 0;
     this.shakeImpulseX = 0;
     this.shakeImpulseY = 0;
+    this.currentAtmosphereLevel = 1;
     this.atmosphereProgress = 0;
     this.targetAtmosphereProgress = 0;
+    this.fromAtmosphereProgress = 0;
+    this.toAtmosphereProgress = 0;
+    this.atmosphereCrossFade = 1;
     this.lightningFlash = 0;
     this.lightningCooldown = 2.4;
+    this.distortionTimer = 0;
+    this.distortionIntensity = 0;
+  }
+
+  public triggerScreenDistortion(
+    intensity = 1,
+    worldX = 0,
+    worldY = 0,
+    color = '#f97316',
+    duration = 1.05
+  ): void {
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const targetIntensity = prefersReduced
+      ? clamp(intensity * 0.35, 0.15, 0.35)
+      : clamp(intensity, 0.25, 1);
+    const targetDuration = prefersReduced ? Math.min(0.55, duration) : Math.max(0.45, duration);
+
+    const screenX = this.lastFulcrumX + worldX * this.lastScale;
+    const screenY = this.lastFulcrumY + worldY * this.lastScale;
+    this.distortionOriginNormX = clamp(screenX / Math.max(1, this.lastRenderWidth), 0.08, 0.92);
+    this.distortionOriginNormY = clamp(screenY / Math.max(1, this.lastRenderHeight), 0.12, 0.88);
+    this.distortionIntensity = Math.max(this.distortionIntensity, targetIntensity);
+    this.distortionDuration = targetDuration;
+    this.distortionTimer = targetDuration;
+    this.distortionColor = color;
+  }
+
+  public getScreenDistortionAmount(): number {
+    if (this.distortionTimer <= 0 || this.distortionDuration <= 0) return 0;
+    const ratio = clamp(this.distortionTimer / this.distortionDuration, 0, 1);
+    // Fast initial shock peak that eases smoothly to zero over ~1s
+    return Math.pow(ratio, 1.35) * this.distortionIntensity;
+  }
+
+  public isScreenDistortionActive(): boolean {
+    return this.distortionTimer > 0.005;
   }
 
   public hasActiveEffects(): boolean {
     if (
       this.trauma > 0.005 ||
       Math.abs(this.shakeImpulseX) > 0.1 ||
-      Math.abs(this.shakeImpulseY) > 0.1
+      Math.abs(this.shakeImpulseY) > 0.1 ||
+      this.isAtmosphereTransitioning() ||
+      this.isScreenDistortionActive()
     ) {
       return true;
     }
@@ -507,9 +607,20 @@ export class BalanceRenderer {
 
   public tickVisuals(dt: number): void {
     this.animTime += dt;
-    const atmoDiff = this.targetAtmosphereProgress - this.atmosphereProgress;
-    if (Math.abs(atmoDiff) > 0.0005) {
-      this.atmosphereProgress += atmoDiff * Math.min(1, dt * 1.6);
+    if (this.atmosphereCrossFade < 1) {
+      this.atmosphereCrossFade = Math.min(
+        1,
+        this.atmosphereCrossFade + dt / ATMOSPHERE_CROSSFADE_DURATION
+      );
+      const t = this.atmosphereCrossFade;
+      const eased = t * t * (3 - 2 * t);
+      this.atmosphereProgress =
+        this.fromAtmosphereProgress +
+        (this.toAtmosphereProgress - this.fromAtmosphereProgress) * eased;
+      if (this.atmosphereCrossFade >= 1) {
+        this.fromAtmosphereProgress = this.toAtmosphereProgress;
+        this.atmosphereProgress = this.toAtmosphereProgress;
+      }
     } else {
       this.atmosphereProgress = this.targetAtmosphereProgress;
     }
@@ -525,6 +636,12 @@ export class BalanceRenderer {
     }
 
     this.trauma = Math.max(0, this.trauma - dt * 2.1);
+    if (this.distortionTimer > 0) {
+      this.distortionTimer = Math.max(0, this.distortionTimer - dt);
+      if (this.distortionTimer === 0) {
+        this.distortionIntensity = 0;
+      }
+    }
     const impulseDecay = Math.exp(-14 * dt);
     this.shakeImpulseX *= impulseDecay;
     this.shakeImpulseY *= impulseDecay;
@@ -639,18 +756,27 @@ export class BalanceRenderer {
 
     ctx.save();
 
-    // Compute layout center & scale so board fits comfortably on any viewport
-    const isDesktopTitle = phase === 'title' && width >= 900;
-    const fulcrumScreenX = isDesktopTitle ? width * 0.65 : width * 0.5;
-    const fulcrumScreenY = phase === 'title' && width < 900 ? height * 0.69 : height * 0.54;
+    // Compute layout center & scale so board fits comfortably across portrait phones, landscape phones, tablets, and desktops
+    const wideTitle = phase === 'title' && isWideTitleLayout(width, height);
+    const compactLandscape = width > height && height < 520;
+    const fulcrumScreenX = wideTitle ? width * 0.65 : width * 0.5;
+    const fulcrumScreenY =
+      phase === 'title' && !wideTitle
+        ? height * 0.72
+        : compactLandscape
+          ? height * 0.56
+          : height * 0.54;
 
-    // 1. Dynamic Level-Based Sky Background (Calm Sunrise -> Stormy Night)
-    const sunScreenX = isDesktopTitle ? width * 0.84 : width * 0.22;
+    // 1. Dynamic Level-Based Sky Background (Dual-Layer Cross-Fade: Sunrise -> Stormy Night)
+    const sunScreenX = wideTitle ? width * 0.84 : width * 0.22;
     this.drawDynamicBackground(ctx, width, height, state, sunScreenX);
 
-    const availW = isDesktopTitle ? width * 0.58 : width * 0.9;
-    const availH = height * 0.72;
-    const scale = clamp(Math.min(availW / 620, availH / 380), 0.52, 1.45);
+    const availW = wideTitle ? width * 0.54 : width * 0.92;
+    const availH = height * (phase === 'title' && !wideTitle ? 0.56 : 0.72);
+    const scale = clamp(Math.min(availW / 620, availH / 380), 0.42, 1.45);
+    this.lastFulcrumX = fulcrumScreenX;
+    this.lastFulcrumY = fulcrumScreenY;
+    this.lastScale = scale;
 
     // Screen trauma + directional impact shake
     const shakeOffset = this.getShakeOffsets();
@@ -692,18 +818,169 @@ export class BalanceRenderer {
 
     ctx.restore();
 
+    // 6b. Temporary Combined Screen Blur + Shockwave Distortion Post-Process
+    if (this.isScreenDistortionActive()) {
+      this.applyScreenDistortionPostProcess(ctx, width, height);
+    }
+
     // 7. Full-Screen Confetti Explosion Particles (screen space)
     this.drawScreenParticles(ctx);
   }
 
-  private drawDynamicBackground(
+  private ensureDistortionScratch(pixelW: number, pixelH: number): HTMLCanvasElement | null {
+    if (typeof document === 'undefined') return null;
+    const w = Math.max(1, Math.round(pixelW));
+    const h = Math.max(1, Math.round(pixelH));
+    const scratch = this.distortionScratch ?? document.createElement('canvas');
+    if (scratch.width !== w || scratch.height !== h) {
+      scratch.width = w;
+      scratch.height = h;
+    }
+    this.distortionScratch = scratch;
+    return scratch;
+  }
+
+  private applyScreenDistortionPostProcess(
     ctx: CanvasRenderingContext2D,
     width: number,
-    height: number,
-    state: PhysicsState,
-    sunCenterX: number
+    height: number
   ): void {
-    const atmo = this.getAtmosphereState();
+    const strength = this.getScreenDistortionAmount();
+    if (strength <= 0.004) return;
+
+    const srcCanvas = ctx.canvas;
+    const pixelW = srcCanvas?.width ?? Math.round(width);
+    const pixelH = srcCanvas?.height ?? Math.round(height);
+    const dprY = pixelH / Math.max(1, height);
+
+    const progress = clamp(1 - this.distortionTimer / Math.max(0.01, this.distortionDuration), 0, 1);
+    const ox = this.distortionOriginNormX * width;
+    const oy = this.distortionOriginNormY * height;
+
+    const scratch = this.ensureDistortionScratch(pixelW, pixelH);
+    const sctx = scratch?.getContext('2d') ?? null;
+
+    if (scratch && sctx && srcCanvas) {
+      sctx.setTransform(1, 0, 0, 1, 0, 0);
+      sctx.clearRect(0, 0, pixelW, pixelH);
+      sctx.drawImage(srcCanvas, 0, 0);
+
+      // Layer 1: Temporary directional/kinetic Screen Blur + slight shock zoom pulse
+      const blurPx = clamp(strength * 7.2, 0.2, 7.5);
+      const zoom = 1 + strength * 0.026;
+      ctx.save();
+      ctx.filter = `blur(${blurPx.toFixed(2)}px)`;
+      ctx.translate(ox, oy);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-ox, -oy);
+      ctx.drawImage(scratch, 0, 0, width, height);
+      ctx.restore();
+
+      // Layer 2: Keep a subtle sharper focal clarity aperture directly around impact/center, blended softly
+      // Layer 3: Expanding Shockwave Lens Refraction Rings (clipped optical magnification band)
+      const maxRadius = Math.hypot(width, height) * 0.68;
+      const r1 = Math.max(18, progress * maxRadius);
+      const bandHalf = 22 + strength * 14;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(ox, oy, r1 + bandHalf, 0, Math.PI * 2, false);
+      if (r1 > bandHalf) {
+        ctx.arc(ox, oy, r1 - bandHalf, 0, Math.PI * 2, true);
+      }
+      ctx.clip();
+      const lensScale = 1 + strength * 0.055;
+      ctx.globalAlpha = clamp(0.45 + strength * 0.45, 0, 0.9);
+      ctx.translate(ox, oy);
+      ctx.scale(lensScale, lensScale);
+      ctx.translate(-ox, -oy);
+      ctx.drawImage(scratch, 0, 0, width, height);
+      ctx.restore();
+
+      // Layer 4: Horizontal wave-warp slices for visceral collision distortion
+      const sliceCount = 14;
+      const sliceH = height / sliceCount;
+      ctx.save();
+      ctx.globalAlpha = clamp(strength * 0.42, 0, 0.48);
+      for (let i = 0; i < sliceCount; i++) {
+        const sy = i * sliceH;
+        const distFromEpicenter = Math.abs(sy + sliceH * 0.5 - oy) / Math.max(1, height);
+        const envelope = Math.max(0.25, 1 - distFromEpicenter * 0.9);
+        const waveShift =
+          Math.sin(i * 1.15 + this.animTime * 46) * strength * 13 * envelope;
+        ctx.drawImage(
+          scratch,
+          0,
+          sy * dprY,
+          pixelW,
+          sliceH * dprY,
+          waveShift,
+          sy,
+          width,
+          sliceH
+        );
+      }
+      ctx.restore();
+    }
+
+    // Layer 5: Dual Chromatic Shockwave Rings & Impact Vignette Pulse (works even if scratch unavailable)
+    const maxRadius = Math.hypot(width, height) * 0.68;
+    const r1 = Math.max(18, progress * maxRadius);
+    const r2 = Math.max(8, (progress - 0.08) * maxRadius * 0.84);
+
+    ctx.save();
+    ctx.globalAlpha = clamp(strength * 0.72, 0, 0.8);
+    ctx.strokeStyle = this.distortionColor;
+    ctx.lineWidth = 3.5 + strength * 4;
+    ctx.beginPath();
+    ctx.arc(ox, oy, r1, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Chromatic RGB split echo ring
+    ctx.globalAlpha = clamp(strength * 0.48, 0, 0.55);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(ox - strength * 5, oy, r1 * 0.985, 0, Math.PI * 2);
+    ctx.stroke();
+
+    if (r2 > 14) {
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 2.0 + strength * 2.2;
+      ctx.beginPath();
+      ctx.arc(ox + strength * 4, oy, r2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Peripheral impact vignette frame
+    const vigGrad = ctx.createRadialGradient(
+      ox,
+      oy,
+      Math.min(width, height) * 0.24,
+      width * 0.5,
+      height * 0.5,
+      Math.max(width, height) * 0.78
+    );
+    vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vigGrad.addColorStop(1, 'rgba(15, 23, 42, 0.52)');
+    ctx.globalAlpha = clamp(strength * 0.75, 0, 0.75);
+    ctx.fillStyle = vigGrad;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
+
+  private drawAtmosphereLayer(
+    ctx: CanvasRenderingContext2D,
+    atmo: AtmosphereState,
+    width: number,
+    height: number,
+    sunCenterX: number,
+    layerAlpha: number
+  ): void {
+    if (layerAlpha <= 0.002) return;
+
+    ctx.save();
+    ctx.globalAlpha = layerAlpha;
 
     // Base sky gradient
     const skyGrad = ctx.createLinearGradient(0, 0, 0, height);
@@ -727,7 +1004,7 @@ export class BalanceRenderer {
       glowGrad.addColorStop(0, atmo.glowColor);
       glowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.save();
-      ctx.globalAlpha = atmo.glowAlpha;
+      ctx.globalAlpha = layerAlpha * atmo.glowAlpha;
       ctx.fillStyle = glowGrad;
       ctx.fillRect(0, 0, width, height);
       ctx.restore();
@@ -741,7 +1018,7 @@ export class BalanceRenderer {
         const sx = (((i * 197 + 43) % 997) / 997) * width;
         const sy = (((i * 313 + 79) % 547) / 547) * (height * 0.64);
         const twinkle = 0.45 + 0.55 * Math.sin(this.animTime * 2.1 + i * 1.9);
-        ctx.globalAlpha = atmo.starAlpha * twinkle;
+        ctx.globalAlpha = layerAlpha * atmo.starAlpha * twinkle;
         const size = i % 5 === 0 ? 1.8 : 1.1;
         ctx.beginPath();
         ctx.arc(sx, sy, size, 0, Math.PI * 2);
@@ -754,13 +1031,13 @@ export class BalanceRenderer {
     if (atmo.sunOpacity > 0.03) {
       const sunY = height * atmo.sunYNorm;
       ctx.save();
-      ctx.globalAlpha = atmo.sunOpacity * 0.25;
+      ctx.globalAlpha = layerAlpha * atmo.sunOpacity * 0.25;
       ctx.fillStyle = atmo.sunColor;
       ctx.beginPath();
       ctx.arc(sunCenterX, sunY, atmo.sunRadius * 1.65, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.globalAlpha = atmo.sunOpacity * 0.85;
+      ctx.globalAlpha = layerAlpha * atmo.sunOpacity * 0.85;
       ctx.beginPath();
       ctx.arc(sunCenterX, sunY, atmo.sunRadius, 0, Math.PI * 2);
       ctx.fill();
@@ -778,11 +1055,11 @@ export class BalanceRenderer {
         const cy = height * (0.14 + (i % 3) * 0.13) + Math.sin(this.animTime * 0.4 + i) * 6;
         const rx = 125 + (i % 3) * 48;
         const ry = 20 + (i % 2) * 10;
-        ctx.globalAlpha = atmo.cloudAlpha * (i % 2 === 0 ? 0.36 : 0.26);
+        ctx.globalAlpha = layerAlpha * atmo.cloudAlpha * (i % 2 === 0 ? 0.36 : 0.26);
         ctx.beginPath();
         ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = atmo.cloudAlpha * 0.28;
+        ctx.globalAlpha = layerAlpha * atmo.cloudAlpha * 0.28;
         ctx.beginPath();
         ctx.ellipse(cx + rx * 0.38, cy - ry * 0.35, rx * 0.56, ry * 0.82, 0, 0, Math.PI * 2);
         ctx.fill();
@@ -791,6 +1068,30 @@ export class BalanceRenderer {
         ctx.fill();
       }
       ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  private drawDynamicBackground(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    state: PhysicsState,
+    sunCenterX: number
+  ): void {
+    const atmo = this.getAtmosphereState();
+
+    if (this.atmosphereCrossFade < 0.999) {
+      const fromAtmo = computeAtmosphereFromProgress(this.fromAtmosphereProgress);
+      const toAtmo = computeAtmosphereFromProgress(this.toAtmosphereProgress);
+      const t = this.atmosphereCrossFade;
+      const eased = t * t * (3 - 2 * t);
+
+      this.drawAtmosphereLayer(ctx, fromAtmo, width, height, sunCenterX, 1);
+      this.drawAtmosphereLayer(ctx, toAtmo, width, height, sunCenterX, eased);
+    } else {
+      this.drawAtmosphereLayer(ctx, atmo, width, height, sunCenterX, 1);
     }
 
     // Stormy night lightning flash & distant bolt
@@ -2009,6 +2310,7 @@ export class BalanceRenderer {
   ): void {
     const preset = MONSTER_PRESETS[m.kind];
     const pulse = 0.45 + 0.5 * Math.sin(this.animTime * 18);
+    const isGiant = m.kind === 'titan';
     const shortTag =
       m.kind === 'monkey'
         ? 'MONYET!'
@@ -2018,7 +2320,9 @@ export class BalanceRenderer {
             ? 'MANUSIA!'
             : m.kind === 'robot'
               ? 'ROBOT!'
-              : 'SLIME!';
+              : m.kind === 'titan'
+                ? 'TITAN RAKSASA!'
+                : 'SLIME!';
 
     ctx.save();
     ctx.translate(m.x, topY);
@@ -2026,15 +2330,16 @@ export class BalanceRenderer {
     // Landing warning pad on the board
     ctx.globalAlpha = 0.3 + pulse * 0.4;
     ctx.fillStyle = preset.color;
-    ctx.fillRect(-20, -4, 40, 5);
+    const padHalf = isGiant ? 32 : 20;
+    ctx.fillRect(-padHalf, -4, padHalf * 2, isGiant ? 6 : 5);
 
     // Vertical drop guide line
     ctx.strokeStyle = preset.color;
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = isGiant ? 2.4 : 1.6;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
     ctx.moveTo(0, -10);
-    ctx.lineTo(0, -64);
+    ctx.lineTo(0, isGiant ? -74 : -64);
     ctx.stroke();
     ctx.setLineDash([]);
 
@@ -2042,16 +2347,17 @@ export class BalanceRenderer {
     ctx.globalAlpha = 0.75 + pulse * 0.25;
     ctx.fillStyle = '#141920';
     ctx.strokeStyle = preset.color;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = isGiant ? 2.2 : 1.8;
+    const badgeW = isGiant ? 104 : 72;
     ctx.beginPath();
-    ctx.roundRect(-36, -92, 72, 22, 6);
+    ctx.roundRect(-badgeW * 0.5, isGiant ? -100 : -92, badgeW, 22, 6);
     ctx.fill();
     ctx.stroke();
 
     ctx.fillStyle = preset.color;
     ctx.font = '800 10px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(shortTag, 0, -77);
+    ctx.fillText(shortTag, 0, isGiant ? -85 : -77);
 
     ctx.restore();
   }
@@ -2375,6 +2681,93 @@ export class BalanceRenderer {
       ctx.arc(-4, -h * 0.42, 1.5, 0, Math.PI * 2);
       ctx.arc(5, -h * 0.42, 1.5, 0, Math.PI * 2);
       ctx.fill();
+    } else if (m.kind === 'titan') {
+      // Towering giant Stone/Magma Titan obstacle (~68 units tall, 52 units wide)
+      const hopY = -m.hopHeight;
+      const shadowScale = clamp(1 - m.hopHeight / 30, 0.65, 1);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 29 * shadowScale, 5.5 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.translate(0, hopY);
+
+      // Massive stone pillars / legs
+      ctx.fillStyle = '#1e293b';
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.roundRect(-20, -18, 14, 18, 3);
+      ctx.roundRect(6, -18, 14, 18, 3);
+      ctx.fill();
+      ctx.stroke();
+
+      // Broad jagged obsidian torso
+      const torsoGrad = ctx.createLinearGradient(0, -56, 0, -14);
+      torsoGrad.addColorStop(0, '#475569');
+      torsoGrad.addColorStop(0.55, '#334155');
+      torsoGrad.addColorStop(1, '#1e293b');
+      ctx.fillStyle = torsoGrad;
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-26, -18);
+      ctx.lineTo(-29, -46);
+      ctx.lineTo(-17, -58);
+      ctx.lineTo(17, -58);
+      ctx.lineTo(29, -46);
+      ctx.lineTo(26, -18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Molten amber fissures across chest
+      const emberPulse = 0.65 + 0.35 * Math.sin(this.animTime * 8);
+      ctx.strokeStyle = `rgba(249, 115, 22, ${emberPulse})`;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(-14, -48);
+      ctx.lineTo(-3, -37);
+      ctx.lineTo(8, -42);
+      ctx.lineTo(15, -28);
+      ctx.moveTo(-3, -37);
+      ctx.lineTo(-6, -22);
+      ctx.stroke();
+
+      // Giant stone fists flanking the body
+      ctx.fillStyle = '#334155';
+      ctx.strokeStyle = '#f97316';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.roundRect(-34, -36, 11, 20, 4);
+      ctx.roundRect(23, -36, 11, 20, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      // Crowned boulder head with glowing magma eyes
+      ctx.fillStyle = '#1e293b';
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.roundRect(-14, -71, 28, 17, 5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Jagged stone horns
+      ctx.fillStyle = '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(-13, -68);
+      ctx.lineTo(-19, -78);
+      ctx.lineTo(-7, -71);
+      ctx.moveTo(13, -68);
+      ctx.lineTo(19, -78);
+      ctx.lineTo(7, -71);
+      ctx.fill();
+
+      // Blazing ember eyes
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(-8, -64, 5, 3.2);
+      ctx.fillRect(3, -64, 5, 3.2);
     }
 
     ctx.restore();

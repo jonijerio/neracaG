@@ -140,9 +140,21 @@ class GameAudioEngine {
       this.tone(ctx, 130, 58, 0.2, 'triangle', 0.095, now);
     } else if (kind === 'robot') {
       this.tone(ctx, 490, 260, 0.13, 'sawtooth', 0.045, now);
+    } else if (kind === 'titan') {
+      this.tone(ctx, 88, 34, 0.36, 'triangle', 0.14, now);
+      this.tone(ctx, 145, 52, 0.24, 'sawtooth', 0.06, now + 0.015);
     } else {
       this.tone(ctx, 210, 145, 0.16, 'sine', 0.065, now);
     }
+  }
+
+  public playHeavyCollisionDistortion(intensity = 1): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const scale = Math.max(0.4, Math.min(1, intensity));
+    this.tone(ctx, 110, 38, 0.34, 'sine', 0.12 * scale, now);
+    this.tone(ctx, 220, 75, 0.22, 'triangle', 0.065 * scale, now + 0.02);
   }
 
   public playCoinEarned(): void {
